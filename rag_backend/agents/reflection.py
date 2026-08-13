@@ -55,4 +55,13 @@ Evidence:
         verdict_line = lines[0].strip().upper() if lines else ""
         reason = lines[1].strip() if len(lines) > 1 else ""
 
-        return EvidenceVerdict(sufficient="SUFFICIENT" in verdict_line, reason=reason)
+        # "INSUFFICIENT" contains "SUFFICIENT" as a substring, so check the
+        # negative case first or a naive "in" check always returns True.
+        if "INSUFFICIENT" in verdict_line:
+            sufficient = False
+        elif "SUFFICIENT" in verdict_line:
+            sufficient = True
+        else:
+            sufficient = False  # unexpected output — fail safe, don't answer
+
+        return EvidenceVerdict(sufficient=sufficient, reason=reason)

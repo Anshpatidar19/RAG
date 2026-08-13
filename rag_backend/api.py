@@ -5,13 +5,16 @@ for the React frontend to call. Run with:
     uvicorn api:app --reload
 """
 
+import io
+import mimetypes
 import shutil
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from gtts import gTTS
 from google import genai
 from pydantic import BaseModel
 
@@ -72,6 +75,10 @@ supervisor = Supervisor(
 # --- Request/response schemas ---
 class AskRequest(BaseModel):
     question: str
+
+
+class TTSRequest(BaseModel):
+    text: str
 
 
 class SourceResponse(BaseModel):
@@ -160,7 +167,13 @@ def get_document_file(doc_id: str):
     file_path = Path(document.filepath)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
-    return FileResponse(file_path, filename=document.filename)
+    media_type, _ = mimetypes.guess_type(document.filename)
+    return FileResponse(
+        file_path,
+        filename=document.filename,
+        media_type=media_type or "application/octet-stream",
+        content_disposition_type="inline",
+    )
 
 
 @app.delete("/documents/{doc_id}")
@@ -217,3 +230,18 @@ def ask(request: AskRequest):
         )
 
     return AskResponse(answer=result.text, answerable=result.answerable, sources=sources)
+
+
+@app.post("/tts")
+def text_to_speech(request: TTSRequest):
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+    try:
+        tts = gTTS(text=text, lang="en")
+        buffer = io.BytesIO()
+        tts.write_to_fp(buffer)
+        buffer.seek(0)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
+    return StreamingResponse(buffer, media_type="audio/mpeg")

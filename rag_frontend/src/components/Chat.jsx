@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { askQuestion } from "../api/client";
+import { askQuestion, textToSpeech } from "../api/client";
+
+const SpeechRecognitionAPI =
+  typeof window !== "undefined"
+    ? window.SpeechRecognition || window.webkitSpeechRecognition
+    : null;
 
 export default function Chat({ messages, onNewMessage }) {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [listening, setListening] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState(null);
   const bottomRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const audioRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -34,6 +43,59 @@ export default function Chat({ messages, onNewMessage }) {
     }
   }
 
+  function toggleListening() {
+    if (!SpeechRecognitionAPI) {
+      setError("Speech recognition isn't supported in this browser (try Chrome or Edge).");
+      return;
+    }
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const recognition = new SpeechRecognitionAPI();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setQuestion((prev) => (prev ? `${prev} ${transcript}` : transcript));
+    };
+    recognition.onerror = () => {
+      setListening(false);
+    };
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  async function handleSpeak(text, index) {
+    if (speakingIndex === index) {
+      audioRef.current?.pause();
+      setSpeakingIndex(null);
+      return;
+    }
+    try {
+      setSpeakingIndex(index);
+      const blob = await textToSpeech(text);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => setSpeakingIndex(null);
+      audio.onerror = () => setSpeakingIndex(null);
+      await audio.play();
+    } catch (err) {
+      setError(err.message);
+      setSpeakingIndex(null);
+    }
+  }
+
   return (
     <div className="chat-panel">
       <div className="chat-history">
@@ -43,9 +105,19 @@ export default function Chat({ messages, onNewMessage }) {
         {messages.map((turn, i) => (
           <div key={i} className="chat-turn">
             <p className="chat-question">{turn.question}</p>
-            <p className={`chat-answer ${!turn.answerable ? "chat-answer-empty" : ""}`}>
-              {turn.answer}
-            </p>
+            <div className="chat-answer-row">
+              <p className={`chat-answer ${!turn.answerable ? "chat-answer-empty" : ""}`}>
+                {turn.answer}
+              </p>
+              <button
+                className={`speak-button ${speakingIndex === i ? "speaking" : ""}`}
+                onClick={() => handleSpeak(turn.answer, i)}
+                title="Listen to this answer"
+                type="button"
+              >
+                {speakingIndex === i ? "■" : "🔊"}
+              </button>
+            </div>
             {turn.answerable && turn.sources.length > 0 && (
               <details className="chat-sources">
                 <summary>
@@ -105,11 +177,19 @@ export default function Chat({ messages, onNewMessage }) {
       {error && <p className="chat-error">{error}</p>}
 
       <form onSubmit={handleSubmit} className="chat-input-row">
+        <button
+          type="button"
+          className={`mic-button ${listening ? "listening" : ""}`}
+          onClick={toggleListening}
+          title={listening ? "Stop listening" : "Ask by voice"}
+        >
+          {listening ? "●" : "🎤"}
+        </button>
         <input
           type="text"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder="Ask a question about your documents..."
+          placeholder={listening ? "Listening..." : "Ask a question about your documents..."}
           disabled={loading}
         />
         <button type="submit" disabled={loading || !question.trim()}>

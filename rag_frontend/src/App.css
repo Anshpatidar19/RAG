@@ -563,3 +563,61 @@ a:focus-visible {
 .chat-input-row button:hover:not(:disabled) {
   opacity: 0.85;
 }
+
+.mic-button {
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 6px;
+  width: 40px;
+  flex-shrink: 0;
+  font-size: 15px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.mic-button:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+.mic-button.listening {
+  border-color: var(--error) !important;
+  color: var(--error) !important;
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.chat-answer-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-answer-row .chat-answer {
+  flex: 1;
+}
+
+.speak-button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.speak-button:hover {
+  color: var(--accent);
+}
+
+.speak-button.speaking {
+  color: var(--accent);
+}

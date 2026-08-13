@@ -53,3 +53,16 @@ export async function askQuestion(question) {
   });
   return handleResponse(res);
 }
+
+export async function textToSpeech(text) {
+  const res = await fetch(`${BASE_URL}/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || "Text-to-speech failed");
+  }
+  return res.blob();
+}
