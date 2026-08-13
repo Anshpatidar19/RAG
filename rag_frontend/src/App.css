@@ -268,6 +268,16 @@ a:focus-visible {
   text-overflow: ellipsis;
 }
 
+.document-name-link {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.document-name-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .document-meta {
   font-family: var(--font-mono);
   font-size: 10px;

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from google import genai
 from pydantic import BaseModel
 
@@ -39,6 +40,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Where original uploaded files are kept permanently, so they can be opened later ---
+FILES_DIR = Path(__file__).parent / "uploaded_files"
+FILES_DIR.mkdir(exist_ok=True)
 
 # --- Wiring: document CRUD (unchanged) ---
 _embedder = Embedder()
@@ -89,6 +94,7 @@ class DocumentResponse(BaseModel):
     filename: str
     status: str
     num_chunks: int
+    file_url: str
 
 
 # --- Helpers ---
@@ -98,6 +104,7 @@ def _to_document_response(doc) -> DocumentResponse:
         filename=doc.filename,
         status=doc.status.value,
         num_chunks=doc.num_chunks,
+        file_url=f"/documents/{doc.doc_id}/file",
     )
 
 
@@ -106,6 +113,17 @@ def _save_upload_to_temp(file: UploadFile) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         shutil.copyfileobj(file.file, tmp)
         return tmp.name
+
+
+def _persist_file(tmp_path: str, doc_id: str, original_filename: str) -> str:
+    """Move the temp upload into permanent storage, named by doc_id so it survives restarts."""
+    suffix = Path(original_filename).suffix
+    dest = FILES_DIR / f"{doc_id}{suffix}"
+    # Clean up any previous file for this doc_id (relevant on update, if extension changed)
+    for existing in FILES_DIR.glob(f"{doc_id}.*"):
+        existing.unlink(missing_ok=True)
+    shutil.move(tmp_path, dest)
+    return str(dest)
 
 
 # --- Endpoints ---
@@ -119,6 +137,9 @@ def upload_document(file: UploadFile = File(...)):
     tmp_path = _save_upload_to_temp(file)
     try:
         document = kb.add_document(tmp_path, display_filename=file.filename)
+        permanent_path = _persist_file(tmp_path, document.doc_id, file.filename)
+        document.filepath = permanent_path
+        kb.document_repository.save(document)
         return _to_document_response(document)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -131,11 +152,24 @@ def list_documents():
     return [_to_document_response(d) for d in kb.list_documents()]
 
 
+@app.get("/documents/{doc_id}/file")
+def get_document_file(doc_id: str):
+    document = kb.get_document(doc_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    file_path = Path(document.filepath)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(file_path, filename=document.filename)
+
+
 @app.delete("/documents/{doc_id}")
 def delete_document(doc_id: str):
-    if kb.get_document(doc_id) is None:
+    document = kb.get_document(doc_id)
+    if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     kb.delete_document(doc_id)
+    Path(document.filepath).unlink(missing_ok=True)
     return {"deleted": doc_id}
 
 
@@ -146,6 +180,9 @@ def update_document(doc_id: str, file: UploadFile = File(...)):
     tmp_path = _save_upload_to_temp(file)
     try:
         document = kb.update_document(doc_id, tmp_path, display_filename=file.filename)
+        permanent_path = _persist_file(tmp_path, document.doc_id, file.filename)
+        document.filepath = permanent_path
+        kb.document_repository.save(document)
         return _to_document_response(document)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

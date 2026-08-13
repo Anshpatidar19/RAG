@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import { deleteDocument, updateDocument } from "../api/client";
 
+const API_BASE = "http://127.0.0.1:8000";
+
 export default function DocumentList({ documents, onChanged }) {
   const [pendingId, setPendingId] = useState(null);
   const [error, setError] = useState("");
@@ -61,7 +63,15 @@ export default function DocumentList({ documents, onChanged }) {
         {documents.map((doc) => (
           <li key={doc.doc_id} className="document-list-item">
             <div className="document-info">
-              <span className="document-name">{doc.filename}</span>
+              <a
+                href={`${API_BASE}${doc.file_url}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="document-name document-name-link"
+                title="Open this file"
+              >
+                {doc.filename}
+              </a>
               <span className="document-meta">
                 {doc.status} · {doc.num_chunks} chunks
               </span>
