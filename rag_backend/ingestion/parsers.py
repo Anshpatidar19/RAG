@@ -10,6 +10,8 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 
+from ingestion.ocr_parser import parse_image
+
 
 class UnsupportedFileTypeError(Exception):
     pass
@@ -43,6 +45,10 @@ PARSERS = {
     ".docx": parse_docx,
     ".txt": parse_txt,
     ".md": parse_txt,
+    ".png": parse_image,
+    ".jpg": parse_image,
+    ".jpeg": parse_image,
+    ".webp": parse_image,
 }
 
 

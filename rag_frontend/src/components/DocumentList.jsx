@@ -54,7 +54,7 @@ export default function DocumentList({ documents, onChanged }) {
       <input
         ref={updateInputRef}
         type="file"
-        accept=".pdf,.docx,.txt,.md"
+        accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
         onChange={handleUpdateFileChosen}
         hidden
       />

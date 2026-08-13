@@ -69,6 +69,7 @@ supervisor = Supervisor(
     web_search=_web_search_tool,
     greeting_agent=_greeting_agent,
     reflection_agent=_reflection_agent,
+    retriever=_retriever,
 )
 
 

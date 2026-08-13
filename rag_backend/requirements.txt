@@ -25,6 +25,9 @@ ddgs==9.14.4
 # Text-to-speech
 gTTS==2.5.4
 
+# OCR (image files)
+mistralai==1.5.1
+
 # Config / env
 python-dotenv==1.0.1
 

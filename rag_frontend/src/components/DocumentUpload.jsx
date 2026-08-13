@@ -32,7 +32,7 @@ export default function DocumentUpload({ onUploaded }) {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.docx,.txt,.md"
+          accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
           onChange={handleFileChange}
           disabled={status === "uploading"}
           hidden
