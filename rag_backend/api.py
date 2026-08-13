@@ -1,5 +1,6 @@
 """
-FastAPI entrypoint. Wraps the KnowledgeBase facade in REST endpoints
+FastAPI entrypoint. Wraps the KnowledgeBase facade (for document CRUD)
+and the Supervisor agent (for answering questions) in REST endpoints
 for the React frontend to call. Run with:
     uvicorn api:app --reload
 """
@@ -10,13 +11,20 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from google import genai
 from pydantic import BaseModel
 
+from agents.greeting import GreetingAgent
+from agents.reflection import ReflectionAgent
+from agents.supervision import Supervisor
+from config import settings
 from embedding.embedder import Embedder
 from generation.generator import AnswerGenerator
 from ingestion.pipeline import IngestionPipeline
 from kb.knowledge_base import KnowledgeBase
 from retrieval.retriever import Retriever
+from retrieval.vector_search import VectorSearchTool
+from retrieval.web_search import WebSearchTool
 from storage.document_repository import DocumentRepository
 from storage.vector_store import VectorStoreRepository
 
@@ -32,7 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Wiring: one shared KnowledgeBase instance for the whole app ---
+# --- Wiring: document CRUD (unchanged) ---
 _embedder = Embedder()
 _vector_store = VectorStoreRepository()
 _document_repository = DocumentRepository()
@@ -41,6 +49,20 @@ _retriever = Retriever(_embedder, _vector_store)
 _generator = AnswerGenerator()
 kb = KnowledgeBase(_pipeline, _retriever, _generator, _vector_store, _document_repository)
 
+# --- Wiring: the agent system, used for /ask ---
+_gemini_client = genai.Client(api_key=settings.gemini_api_key)
+_vector_search_tool = VectorSearchTool(_retriever)
+_web_search_tool = WebSearchTool()
+_greeting_agent = GreetingAgent(_gemini_client)
+_reflection_agent = ReflectionAgent(_gemini_client)
+supervisor = Supervisor(
+    client=_gemini_client,
+    vector_search=_vector_search_tool,
+    web_search=_web_search_tool,
+    greeting_agent=_greeting_agent,
+    reflection_agent=_reflection_agent,
+)
+
 
 # --- Request/response schemas ---
 class AskRequest(BaseModel):
@@ -48,8 +70,10 @@ class AskRequest(BaseModel):
 
 
 class SourceResponse(BaseModel):
-    filename: str
-    page_number: int | None
+    type: str  # "document" | "web"
+    label: str  # filename for documents, page title for web
+    url: str | None = None
+    page_number: int | None = None
     score: float
     text_snippet: str
 
@@ -131,14 +155,28 @@ def update_document(doc_id: str, file: UploadFile = File(...)):
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
-    answer = kb.ask(request.question)
-    sources = [
-        SourceResponse(
-            filename=r.source_filename,
-            page_number=r.chunk.page_number,
-            score=r.score,
-            text_snippet=r.chunk.text[:200],
+    result = supervisor.handle(request.question)
+
+    sources: list[SourceResponse] = []
+    for r in result.doc_sources:
+        sources.append(
+            SourceResponse(
+                type="document",
+                label=r.source_filename,
+                page_number=r.chunk.page_number,
+                score=r.score,
+                text_snippet=r.chunk.text[:200],
+            )
         )
-        for r in answer.sources
-    ]
-    return AskResponse(answer=answer.text, answerable=answer.answerable, sources=sources)
+    for w in result.web_sources:
+        sources.append(
+            SourceResponse(
+                type="web",
+                label=w.title,
+                url=w.url,
+                score=w.score,
+                text_snippet=w.snippet[:200],
+            )
+        )
+
+    return AskResponse(answer=result.text, answerable=result.answerable, sources=sources)

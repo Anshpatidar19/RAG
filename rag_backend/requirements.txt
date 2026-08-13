@@ -19,6 +19,9 @@ python-docx==1.1.2
 # LLM
 google-genai==1.15.0
 
+# Web search fallback
+ddgs==9.14.4
+
 # Config / env
 python-dotenv==1.0.1
 
