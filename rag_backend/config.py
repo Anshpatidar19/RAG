@@ -60,7 +60,7 @@ def load_settings() -> Settings:
         chunk_size=int(os.getenv("CHUNK_SIZE", "800")),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "100")),
         top_k=int(os.getenv("TOP_K", "3")),
-        score_threshold=float(os.getenv("SCORE_THRESHOLD", "0.35")),
+        score_threshold=float(os.getenv("SCORE_THRESHOLD", "0.45")),
     )
 
 

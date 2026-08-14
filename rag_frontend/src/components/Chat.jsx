@@ -1,10 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { askQuestionStream, textToSpeech } from "../api/client";
+import { askQuestionStream } from "../api/client";
+import VoiceOverlay from "./VoiceOverlay";
 
 const SpeechRecognitionAPI =
   typeof window !== "undefined"
     ? window.SpeechRecognition || window.webkitSpeechRecognition
     : null;
+
+const speechSynthesisAPI = typeof window !== "undefined" ? window.speechSynthesis : null;
+
+function cleanForSpeech(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`(.*?)`/g, "$1")
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/[_~]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
 export default function Chat({ messages, onNewMessage }) {
   const [question, setQuestion] = useState("");
@@ -16,17 +31,93 @@ export default function Chat({ messages, onNewMessage }) {
   const [statusMessage, setStatusMessage] = useState("");
   const [streamingText, setStreamingText] = useState("");
 
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const [autoSpeaking, setAutoSpeaking] = useState(false);
+  const [lastSpokenText, setLastSpokenText] = useState("");
+
   const bottomRef = useRef(null);
   const recognitionRef = useRef(null);
-  const audioRef = useRef(null);
+  const messagesRef = useRef(messages);
+  const voiceOverlayOpenRef = useRef(false);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    voiceOverlayOpenRef.current = voiceOverlayOpen;
+  }, [voiceOverlayOpen]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading, streamingText]);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    const trimmed = question.trim();
+  useEffect(() => {
+    return () => speechSynthesisAPI?.cancel();
+  }, []);
+
+  function speak(text, index) {
+    if (!speechSynthesisAPI) return;
+    speechSynthesisAPI.cancel();
+    if (speakingIndex === index) {
+      setSpeakingIndex(null);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(cleanForSpeech(text));
+    utterance.rate = 1.1;
+    utterance.onend = () => setSpeakingIndex(null);
+    utterance.onerror = () => setSpeakingIndex(null);
+    setSpeakingIndex(index);
+    speechSynthesisAPI.speak(utterance);
+  }
+
+  function startListening() {
+    if (!SpeechRecognitionAPI) {
+      setError("Speech recognition isn't supported in this browser (try Chrome or Edge).");
+      return;
+    }
+    if (listening) return;
+
+    const recognition = new SpeechRecognitionAPI();
+    recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      let finalTranscript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        }
+      }
+      if (!finalTranscript) return;
+
+      if (voiceOverlayOpenRef.current) {
+        sendQuestion(finalTranscript.trim());
+      } else {
+        setQuestion((prev) => (prev ? `${prev} ${finalTranscript}`.trim() : finalTranscript.trim()));
+      }
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  function stopListening() {
+    recognitionRef.current?.stop();
+  }
+
+  function toggleListening() {
+    if (listening) stopListening();
+    else startListening();
+  }
+
+  async function sendQuestion(text) {
+    const trimmed = text.trim();
     if (!trimmed || loading) return;
 
     setLoading(true);
@@ -40,15 +131,15 @@ export default function Chat({ messages, onNewMessage }) {
     let finalSources = [];
     let finalAnswerable = true;
 
-    const history = messages.slice(-6).map((turn) => ({
+    const history = messagesRef.current.slice(-6).map((turn) => ({
       question: turn.question,
       answer: turn.answer,
     }));
 
     await askQuestionStream(trimmed, history, {
       onStatus: (msg) => setStatusMessage(msg),
-      onToken: (text) => {
-        finalText += text;
+      onToken: (chunk) => {
+        finalText += chunk;
         setStreamingText(finalText);
       },
       onSources: (sources, answerable) => {
@@ -66,6 +157,23 @@ export default function Chat({ messages, onNewMessage }) {
         setStatusMessage("");
         setPendingQuestion("");
         setLoading(false);
+
+        if (voiceOverlayOpenRef.current && finalText && speechSynthesisAPI) {
+          const cleaned = cleanForSpeech(finalText);
+          const utterance = new SpeechSynthesisUtterance(cleaned);
+          utterance.rate = 1.1;
+          setLastSpokenText(cleaned);
+          setAutoSpeaking(true);
+          utterance.onend = () => {
+            setAutoSpeaking(false);
+            // Continuous conversation: listen again automatically,
+            // unless the overlay was closed while the answer was speaking.
+            if (voiceOverlayOpenRef.current) startListening();
+          };
+          utterance.onerror = () => setAutoSpeaking(false);
+          speechSynthesisAPI.cancel();
+          speechSynthesisAPI.speak(utterance);
+        }
       },
       onError: (msg) => {
         setError(msg);
@@ -77,80 +185,49 @@ export default function Chat({ messages, onNewMessage }) {
     });
   }
 
-  function toggleListening() {
-    if (!SpeechRecognitionAPI) {
-      setError("Speech recognition isn't supported in this browser (try Chrome or Edge).");
-      return;
-    }
-
-    if (listening) {
-      recognitionRef.current?.stop();
-      return;
-    }
-
-    const recognition = new SpeechRecognitionAPI();
-    recognition.lang = "en-US";
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    // Only read NEW results starting at event.resultIndex — reading
-    // results[0] unconditionally re-appends the first-ever recognized
-    // phrase every time onresult fires again, which is what caused
-    // the repeated/duplicated text.
-    recognition.onresult = (event) => {
-      let finalTranscript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        }
-      }
-      if (finalTranscript) {
-        setQuestion((prev) => (prev ? `${prev} ${finalTranscript}`.trim() : finalTranscript.trim()));
-      }
-    };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-
-    recognitionRef.current = recognition;
-    recognition.start();
-    setListening(true);
+  function handleSubmit(event) {
+    event.preventDefault();
+    sendQuestion(question);
   }
 
-  async function handleSpeak(text, index) {
-    // Always stop whatever is currently playing first — clicking a
-    // different answer's speaker while one is already playing used to
-    // leave the old audio running in the background, which made it
-    // look like playback "couldn't be stopped."
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      audioRef.current = null;
-    }
-
-    if (speakingIndex === index) {
-      setSpeakingIndex(null);
-      return;
-    }
-
-    try {
-      setSpeakingIndex(index);
-      const blob = await textToSpeech(text);
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.playbackRate = 1.25;
-      audioRef.current = audio;
-      audio.onended = () => setSpeakingIndex(null);
-      audio.onerror = () => setSpeakingIndex(null);
-      await audio.play();
-    } catch (err) {
-      setError(err.message);
-      setSpeakingIndex(null);
-    }
+  function openVoiceOverlay() {
+    setVoiceOverlayOpen(true);
+    voiceOverlayOpenRef.current = true;
+    startListening();
   }
+
+  function closeVoiceOverlay() {
+    setVoiceOverlayOpen(false);
+    voiceOverlayOpenRef.current = false;
+    stopListening();
+    speechSynthesisAPI?.cancel();
+    setAutoSpeaking(false);
+  }
+
+  function handleOrbTap() {
+    if (loading || autoSpeaking) return;
+    toggleListening();
+  }
+
+  // Determine the overlay's current visual phase
+  let phase = "idle";
+  if (listening) phase = "listening";
+  else if (loading) phase = "thinking";
+  else if (autoSpeaking) phase = "speaking";
+
+  const captionText = autoSpeaking ? lastSpokenText : streamingText || pendingQuestion || "";
 
   return (
     <div className="chat-panel">
+      {voiceOverlayOpen && (
+        <VoiceOverlay
+          phase={phase}
+          captionText={captionText}
+          onClose={closeVoiceOverlay}
+          onTapOrb={handleOrbTap}
+        />
+      )}
+
       <div className="chat-history">
         {messages.length === 0 && !loading && (
           <p className="chat-empty">Ask a question about your uploaded documents.</p>
@@ -164,7 +241,7 @@ export default function Chat({ messages, onNewMessage }) {
               </p>
               <button
                 className={`speak-button ${speakingIndex === i ? "speaking" : ""}`}
-                onClick={() => handleSpeak(turn.answer, i)}
+                onClick={() => speak(turn.answer, i)}
                 title="Listen to this answer"
                 type="button"
               >
@@ -218,7 +295,7 @@ export default function Chat({ messages, onNewMessage }) {
             )}
           </div>
         ))}
-        {loading && (
+        {loading && !voiceOverlayOpen && (
           <div className="chat-turn">
             <p className="chat-question">{pendingQuestion}</p>
             {streamingText ? (
@@ -242,6 +319,14 @@ export default function Chat({ messages, onNewMessage }) {
       {error && <p className="chat-error">{error}</p>}
 
       <form onSubmit={handleSubmit} className="chat-input-row">
+        <button
+          type="button"
+          className="voice-mode-toggle"
+          onClick={openVoiceOverlay}
+          title="Open voice assistant"
+        >
+          🗣️
+        </button>
         <button
           type="button"
           className={`mic-button ${listening ? "listening" : ""}`}

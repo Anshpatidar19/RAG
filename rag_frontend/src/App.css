@@ -316,6 +316,7 @@ a:focus-visible {
 
 /* --- Chat --- */
 .chat-panel {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -612,6 +613,181 @@ a:focus-visible {
   border-color: var(--error) !important;
   color: var(--error) !important;
   animation: mic-pulse 1s ease-in-out infinite;
+}
+
+.voice-mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 6px;
+  width: 40px;
+  flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.voice-mode-toggle:hover {
+  border-color: var(--accent) !important;
+}
+
+.voice-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+}
+
+.voice-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.voice-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.voice-orb-wrap {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.voice-orb {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--accent), var(--accent-dim));
+  transition: transform 0.3s ease;
+  animation: orb-breathe 3s ease-in-out infinite;
+}
+
+.voice-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  opacity: 0;
+}
+
+.ring-1 { width: 110px; height: 110px; }
+.ring-2 { width: 140px; height: 140px; }
+.ring-3 { width: 170px; height: 170px; }
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
+/* Listening: rings pulse outward rhythmically */
+.phase-listening .voice-orb {
+  animation: orb-listen 1.2s ease-in-out infinite;
+}
+.phase-listening .voice-ring {
+  animation: ring-pulse 1.8s ease-out infinite;
+}
+.phase-listening .ring-1 { animation-delay: 0s; }
+.phase-listening .ring-2 { animation-delay: 0.3s; }
+.phase-listening .ring-3 { animation-delay: 0.6s; }
+
+@keyframes orb-listen {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+@keyframes ring-pulse {
+  0% { transform: scale(0.85); opacity: 0.6; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+/* Thinking: orb rotates through a subtle gradient shift, rings spin */
+.phase-thinking .voice-orb {
+  animation: orb-think 1.4s ease-in-out infinite;
+}
+.phase-thinking .voice-ring {
+  opacity: 0.4;
+  animation: ring-spin 2.5s linear infinite;
+  border-style: dashed;
+}
+.phase-thinking .ring-2 { animation-direction: reverse; animation-duration: 3.5s; }
+
+@keyframes orb-think {
+  0%, 100% { transform: scale(0.92); }
+  50% { transform: scale(1.02); }
+}
+
+@keyframes ring-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Speaking: rhythmic bounce, like a talking waveform pulse */
+.phase-speaking .voice-orb {
+  animation: orb-speak 0.5s ease-in-out infinite;
+}
+.phase-speaking .voice-ring {
+  animation: ring-pulse 0.9s ease-out infinite;
+  opacity: 0.5;
+}
+.phase-speaking .ring-1 { animation-delay: 0s; }
+.phase-speaking .ring-2 { animation-delay: 0.15s; }
+.phase-speaking .ring-3 { animation-delay: 0.3s; }
+
+@keyframes orb-speak {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+
+.voice-phase-label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.voice-caption {
+  max-width: 560px;
+  text-align: center;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 0 24px;
+  margin: 0;
+  min-height: 1.6em;
+}
+
+.voice-mode-toggle.active {
+  background: var(--accent-dim) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 
 @keyframes mic-pulse {
