@@ -54,6 +54,50 @@ export async function askQuestion(question) {
   return handleResponse(res);
 }
 
+export async function askQuestionStream(
+  question,
+  history,
+  { onStatus, onToken, onSources, onDone, onError }
+) {
+  try {
+    const res = await fetch(`${BASE_URL}/ask/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, history }),
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`Request failed with status ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr) continue;
+        const event = JSON.parse(jsonStr);
+        if (event.type === "status") onStatus?.(event.message);
+        else if (event.type === "token") onToken?.(event.text);
+        else if (event.type === "sources") onSources?.(event.sources, event.answerable);
+        else if (event.type === "done") onDone?.();
+      }
+    }
+  } catch (err) {
+    onError?.(err.message);
+  }
+}
+
 export async function textToSpeech(text) {
   const res = await fetch(`${BASE_URL}/tts`, {
     method: "POST",

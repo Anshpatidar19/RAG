@@ -383,6 +383,29 @@ a:focus-visible {
   margin: 4px 0;
 }
 
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.chat-status-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.stream-cursor {
+  display: inline-block;
+  color: var(--accent);
+  animation: blink 0.9s step-start infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
 .dot {
   width: 5px;
   height: 5px;
@@ -565,6 +588,9 @@ a:focus-visible {
 }
 
 .mic-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--surface-2) !important;
   color: var(--text-secondary) !important;
   border: 1px solid var(--border-strong) !important;
@@ -572,6 +598,7 @@ a:focus-visible {
   width: 40px;
   flex-shrink: 0;
   font-size: 15px;
+  line-height: 1;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
 }

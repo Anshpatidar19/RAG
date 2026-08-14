@@ -59,7 +59,7 @@ def load_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
         chunk_size=int(os.getenv("CHUNK_SIZE", "800")),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "100")),
-        top_k=int(os.getenv("TOP_K", "5")),
+        top_k=int(os.getenv("TOP_K", "3")),
         score_threshold=float(os.getenv("SCORE_THRESHOLD", "0.35")),
     )
 

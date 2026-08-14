@@ -25,7 +25,7 @@ class WebSearchTool:
         "evidence to answer the question."
     )
 
-    def __init__(self, max_results: int = 5):
+    def __init__(self, max_results: int = 3):
         self.max_results = max_results
 
     def search(self, query: str) -> list[WebSearchResult]:

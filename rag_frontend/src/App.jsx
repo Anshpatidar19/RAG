@@ -73,7 +73,7 @@ export default function App() {
       />
       <main className="main-column">
         <header className="main-header">
-          <span className="brand">▲ Universal RAG</span>
+          <span className="brand"> 🤖 AGENTIC RAG</span>
         </header>
         <Chat messages={activeConversation.messages} onNewMessage={handleNewMessage} />
       </main>

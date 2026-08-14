@@ -42,6 +42,11 @@ retrieval score threshold
               ▼         ▼
           generate    refuse
            answer
+
+handle_stream() follows the exact same routing as handle() above, but
+yields progress/token events instead of returning one final object —
+used by the /ask/stream endpoint for live status updates + token
+streaming in the UI.
 """
 
 
@@ -75,6 +80,16 @@ Be concise and direct. Do not mention "the evidence" or "the context" explicitly
 — answer naturally, as if you know this information."""
 
 
+STANDALONE_QUERY_PROMPT = """You rewrite a follow-up question into a standalone \
+question using the conversation history for context, so it can be searched on its \
+own without needing the prior turns.
+
+Rules:
+- If the follow-up is already standalone (doesn't depend on prior turns), return it unchanged.
+- Resolve pronouns and vague references ("it", "that", "the second one") using the history.
+- Respond with ONLY the rewritten question, nothing else — no preamble, no quotes."""
+
+
 @dataclass
 class AgentAnswer:
     text: str
@@ -103,149 +118,183 @@ class Supervisor:
         self.retriever = retriever
         self.model = model
 
-    def handle(self, message: str) -> AgentAnswer:
+    # ------------------------------------------------------------
+    # Non-streaming path (used by /ask)
+    # ------------------------------------------------------------
 
-        # ---------------------------------------
+    def handle(self, message: str, history: list[dict] | None = None) -> AgentAnswer:
+
+        search_query = self._standalone_query(message, history)
+
         # 1. Greeting / casual query
-        # ---------------------------------------
-
-        if self._is_greeting(message):
-
+        if self._is_greeting(search_query):
             text = self.greeting_agent.respond(message)
+            return AgentAnswer(text=text, answerable=True)
 
-            return AgentAnswer(
-                text=text,
-                answerable=True,
-            )
-
-        # ---------------------------------------
         # 2. Search knowledge base
-        # ---------------------------------------
+        doc_results = self.vector_search.search(search_query)
 
-        doc_results = self.vector_search.search(message)
-
-        # ---------------------------------------
-        # 3. Check retrieval score threshold
-        # ---------------------------------------
-
-        if not self.retriever.has_sufficient_context(
-            doc_results
-        ):
-
-            # Retrieval result is too weak.
-            # Do NOT send weak evidence to Reflection Agent.
+        # 3. Check retrieval score threshold (cheap gate before spending
+        #    an LLM call on reflection)
+        if not self.retriever.has_sufficient_context(doc_results):
             doc_results = []
-
         else:
-
-            # ---------------------------------------
-            # 4. Reflection Agent
-            # ---------------------------------------
-
-            doc_evidence = self._format_doc_evidence(
-                doc_results
-            )
-
-            doc_verdict = self.reflection_agent.validate(
-                message,
-                doc_evidence,
-            )
-
-            # ---------------------------------------
-            # 5. Document answer
-            # ---------------------------------------
+            # 4. Reflection Agent judges relevance, not just similarity
+            doc_evidence = self._format_doc_evidence(doc_results)
+            doc_verdict = self.reflection_agent.validate(search_query, doc_evidence)
 
             if doc_verdict.sufficient:
-
-                answer_text = self._generate(
-                    message,
-                    doc_evidence,
-                )
-
+                answer_text = self._generate(search_query, doc_evidence)
                 return AgentAnswer(
                     text=answer_text,
                     answerable=True,
                     doc_sources=doc_results,
                 )
 
-            # Reflection says retrieved content
-            # is not sufficient.
             doc_results = []
 
-        # ---------------------------------------
         # 6. Web search fallback
-        # ---------------------------------------
+        web_results = self.web_search.search(search_query)
+        web_evidence = self._format_web_evidence(web_results)
 
-        web_results = self.web_search.search(
-            message
-        )
-
-        web_evidence = self._format_web_evidence(
-            web_results
-        )
-
-        # ---------------------------------------
         # 7. Reflection Agent for web evidence
-        # ---------------------------------------
+        web_verdict = self.reflection_agent.validate(search_query, web_evidence)
 
-        web_verdict = self.reflection_agent.validate(
-            message,
-            web_evidence,
-        )
-
-        # ---------------------------------------
         # 8. Web-grounded answer
-        # ---------------------------------------
-
         if web_verdict.sufficient:
-
-            answer_text = self._generate(
-                message,
-                web_evidence,
-            )
-
+            answer_text = self._generate(search_query, web_evidence)
             return AgentAnswer(
                 text=answer_text,
                 answerable=True,
                 web_sources=web_results,
             )
 
-        # ---------------------------------------
         # 9. Nothing sufficient
-        # ---------------------------------------
+        return AgentAnswer(text=NOT_FOUND_MESSAGE, answerable=False)
 
-        return AgentAnswer(
-            text=NOT_FOUND_MESSAGE,
-            answerable=False,
+    # ------------------------------------------------------------
+    # Streaming path (used by /ask/stream)
+    # ------------------------------------------------------------
+
+    def handle_stream(self, message: str, history: list[dict] | None = None):
+        """
+        Same routing logic as handle(), but yields progress events and
+        streamed answer tokens instead of returning one final AgentAnswer.
+        Event shapes:
+          {"type": "status", "message": str}
+          {"type": "token", "text": str}
+          {"type": "sources", "doc_sources": [...], "web_sources": [...], "answerable": bool}
+          {"type": "done"}
+        """
+
+        yield {"type": "status", "message": "Reading your message..."}
+
+        if history:
+            yield {"type": "status", "message": "Understanding your question..."}
+        search_query = self._standalone_query(message, history)
+
+        if self._is_greeting(search_query):
+            yield {"type": "status", "message": "Responding..."}
+            for token in self.greeting_agent.respond_stream(message):
+                yield {"type": "token", "text": token}
+            yield {"type": "sources", "doc_sources": [], "web_sources": [], "answerable": True}
+            yield {"type": "done"}
+            return
+
+        yield {"type": "status", "message": "Searching your documents..."}
+        doc_results = self.vector_search.search(search_query)
+
+        if self.retriever.has_sufficient_context(doc_results):
+            yield {"type": "status", "message": "Checking if the results answer your question..."}
+            doc_evidence = self._format_doc_evidence(doc_results)
+            doc_verdict = self.reflection_agent.validate(search_query, doc_evidence)
+
+            if doc_verdict.sufficient:
+                yield {"type": "status", "message": "Writing answer from your documents..."}
+                for token in self._generate_stream(search_query, doc_evidence):
+                    yield {"type": "token", "text": token}
+                yield {
+                    "type": "sources",
+                    "doc_sources": doc_results,
+                    "web_sources": [],
+                    "answerable": True,
+                }
+                yield {"type": "done"}
+                return
+
+        yield {"type": "status", "message": "Searching the web..."}
+        web_results = self.web_search.search(search_query)
+        web_evidence = self._format_web_evidence(web_results)
+
+        yield {"type": "status", "message": "Checking if the web results answer your question..."}
+        web_verdict = self.reflection_agent.validate(search_query, web_evidence)
+
+        if web_verdict.sufficient:
+            yield {"type": "status", "message": "Writing answer from web results..."}
+            for token in self._generate_stream(search_query, web_evidence):
+                yield {"type": "token", "text": token}
+            yield {
+                "type": "sources",
+                "doc_sources": [],
+                "web_sources": web_results,
+                "answerable": True,
+            }
+            yield {"type": "done"}
+            return
+
+        yield {"type": "token", "text": NOT_FOUND_MESSAGE}
+        yield {"type": "sources", "doc_sources": [], "web_sources": [], "answerable": False}
+        yield {"type": "done"}
+
+    # ------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------
+
+    def _standalone_query(self, message: str, history: list[dict] | None) -> str:
+        """
+        Rewrites a follow-up question into a standalone question using
+        recent conversation history, so retrieval can search on it
+        directly. Skipped entirely (no LLM call) when there's no history,
+        since a first question is always already standalone.
+        """
+        if not history:
+            return message
+
+        history_text = "\n".join(
+            f"User: {turn['question']}\nAssistant: {turn['answer']}"
+            for turn in history[-6:]
         )
+        prompt = f"""Conversation history:
+{history_text}
 
-    def _is_greeting(
-        self,
-        message: str,
-    ) -> bool:
+Follow-up question: {message}"""
 
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config={
+                "system_instruction": STANDALONE_QUERY_PROMPT,
+                "max_output_tokens": 150,
+                "thinking_config": {"thinking_budget": 0},
+            },
+        )
+        rewritten = (response.text or "").strip()
+        return rewritten or message
+
+    def _is_greeting(self, message: str) -> bool:
         response = self.client.models.generate_content(
             model=self.model,
             contents=message,
             config={
                 "system_instruction": INTENT_SYSTEM_PROMPT,
                 "max_output_tokens": 20,
-                "thinking_config": {
-                    "thinking_budget": 0
-                },
+                "thinking_config": {"thinking_budget": 0},
             },
         )
-
         text = response.text or ""
-
         return "GREETING" in text.strip().upper()
 
-    def _generate(
-        self,
-        question: str,
-        evidence: str,
-    ) -> str:
-
+    def _generate(self, question: str, evidence: str) -> str:
         prompt = f"""Evidence:
 {evidence}
 
@@ -257,58 +306,41 @@ Question: {question}"""
             config={
                 "system_instruction": ANSWER_SYSTEM_PROMPT,
                 "max_output_tokens": 1024,
-                "thinking_config": {
-                    "thinking_budget": 0
-                },
+                "thinking_config": {"thinking_budget": 0},
             },
         )
-
         return response.text or ""
 
+    def _generate_stream(self, question: str, evidence: str):
+        prompt = f"""Evidence:
+{evidence}
+
+Question: {question}"""
+
+        stream = self.client.models.generate_content_stream(
+            model=self.model,
+            contents=prompt,
+            config={
+                "system_instruction": ANSWER_SYSTEM_PROMPT,
+                "max_output_tokens": 1024,
+                "thinking_config": {"thinking_budget": 0},
+            },
+        )
+        for chunk in stream:
+            if chunk.text:
+                yield chunk.text
+
     @staticmethod
-    def _format_doc_evidence(
-        results: list[RetrievalResult],
-    ) -> str:
-
+    def _format_doc_evidence(results: list[RetrievalResult]) -> str:
         blocks = []
-
-        for i, r in enumerate(
-            results,
-            start=1,
-        ):
-
-            page = (
-                f", page {r.chunk.page_number}"
-                if r.chunk.page_number is not None
-                else ""
-            )
-
-            blocks.append(
-                f"[Doc {i}: "
-                f"{r.source_filename}"
-                f"{page}]\n"
-                f"{r.chunk.text}"
-            )
-
+        for i, r in enumerate(results, start=1):
+            page = f", page {r.chunk.page_number}" if r.chunk.page_number is not None else ""
+            blocks.append(f"[Doc {i}: {r.source_filename}{page}]\n{r.chunk.text}")
         return "\n\n".join(blocks)
 
     @staticmethod
-    def _format_web_evidence(
-        results: list[WebSearchResult],
-    ) -> str:
-
+    def _format_web_evidence(results: list[WebSearchResult]) -> str:
         blocks = []
-
-        for i, r in enumerate(
-            results,
-            start=1,
-        ):
-
-            blocks.append(
-                f"[Web {i}: "
-                f"{r.title} "
-                f"({r.url})]\n"
-                f"{r.snippet}"
-            )
-
+        for i, r in enumerate(results, start=1):
+            blocks.append(f"[Web {i}: {r.title} ({r.url})]\n{r.snippet}")
         return "\n\n".join(blocks)

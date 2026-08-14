@@ -47,3 +47,34 @@ def parse_image(filepath: str) -> list[tuple[str, int | None]]:
         if page.markdown and page.markdown.strip():
             pages.append((page.markdown, None))
     return pages
+
+
+def parse_pdf_via_ocr(filepath: str) -> list[tuple[str, int | None]]:
+    """
+    Used as a fallback when a PDF has little or no extractable text —
+    typically a scanned document (photographed or scanned pages saved
+    as a PDF with no underlying text layer). Preserves page numbers,
+    unlike the image OCR path, since Mistral returns per-page results.
+    """
+    if not settings.mistral_api_key:
+        raise OCRNotConfiguredError(
+            "MISTRAL_API_KEY is not set in .env — scanned PDF OCR is unavailable."
+        )
+
+    path = Path(filepath)
+    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+
+    client = Mistral(api_key=settings.mistral_api_key)
+    response = client.ocr.process(
+        model="mistral-ocr-latest",
+        document={
+            "type": "document_url",
+            "document_url": f"data:application/pdf;base64,{encoded}",
+        },
+    )
+
+    pages: list[tuple[str, int | None]] = []
+    for i, page in enumerate(response.pages, start=1):
+        if page.markdown and page.markdown.strip():
+            pages.append((page.markdown, i))
+    return pages

@@ -6,7 +6,9 @@ for the React frontend to call. Run with:
 """
 
 import io
+import json
 import mimetypes
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -76,6 +78,7 @@ supervisor = Supervisor(
 # --- Request/response schemas ---
 class AskRequest(BaseModel):
     question: str
+    history: list[dict] = []
 
 
 class TTSRequest(BaseModel):
@@ -206,7 +209,7 @@ def update_document(doc_id: str, file: UploadFile = File(...)):
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
-    result = supervisor.handle(request.question)
+    result = supervisor.handle(request.question, history=request.history)
 
     sources: list[SourceResponse] = []
     for r in result.doc_sources:
@@ -233,9 +236,49 @@ def ask(request: AskRequest):
     return AskResponse(answer=result.text, answerable=result.answerable, sources=sources)
 
 
+@app.post("/ask/stream")
+def ask_stream(request: AskRequest):
+    def event_generator():
+        for event in supervisor.handle_stream(request.question, history=request.history):
+            if event["type"] == "sources":
+                sources_payload = []
+                for r in event["doc_sources"]:
+                    sources_payload.append(
+                        {
+                            "type": "document",
+                            "label": r.source_filename,
+                            "url": None,
+                            "page_number": r.chunk.page_number,
+                            "score": r.score,
+                            "text_snippet": r.chunk.text[:200],
+                        }
+                    )
+                for w in event["web_sources"]:
+                    sources_payload.append(
+                        {
+                            "type": "web",
+                            "label": w.title,
+                            "url": w.url,
+                            "page_number": None,
+                            "score": w.score,
+                            "text_snippet": w.snippet[:200],
+                        }
+                    )
+                payload = {
+                    "type": "sources",
+                    "sources": sources_payload,
+                    "answerable": event["answerable"],
+                }
+            else:
+                payload = event
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.post("/tts")
 def text_to_speech(request: TTSRequest):
-    text = request.text.strip()
+    text = _clean_for_speech(request.text)
     if not text:
         raise HTTPException(status_code=400, detail="No text provided")
     try:
@@ -246,3 +289,20 @@ def text_to_speech(request: TTSRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
     return StreamingResponse(buffer, media_type="audio/mpeg")
+
+
+def _clean_for_speech(text: str) -> str:
+    """
+    Strips markdown formatting that TTS engines otherwise read aloud
+    literally (asterisks, bullet dashes, headers, backticks) so the
+    spoken answer sounds natural instead of narrating symbols.
+    """
+    text = text.strip()
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)  # **bold**
+    text = re.sub(r"\*(.*?)\*", r"\1", text)  # *italic*
+    text = re.sub(r"`(.*?)`", r"\1", text)  # `code`
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)  # # headers
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.MULTILINE)  # bullet markers
+    text = re.sub(r"[_~]", "", text)  # stray underscores/tildes
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()

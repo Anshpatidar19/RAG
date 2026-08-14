@@ -10,7 +10,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 
-from ingestion.ocr_parser import parse_image
+from ingestion.ocr_parser import parse_image, parse_pdf_via_ocr
 
 
 class UnsupportedFileTypeError(Exception):
@@ -18,13 +18,26 @@ class UnsupportedFileTypeError(Exception):
 
 
 def parse_pdf(filepath: str) -> list[tuple[str, int | None]]:
-    """Returns one (text, page_number) tuple per page."""
+    """
+    Returns one (text, page_number) tuple per page. Tries fast native
+    text extraction first; if the PDF has little or no extractable text
+    (typical of scanned/photographed pages with no text layer), falls
+    back to Mistral OCR automatically.
+    """
     pages = []
     with fitz.open(filepath) as doc:
         for page_num, page in enumerate(doc, start=1):
             text = page.get_text()
             if text.strip():
                 pages.append((text, page_num))
+
+    total_chars = sum(len(text.strip()) for text, _ in pages)
+    if total_chars < 100:
+        # Likely a scanned PDF with no text layer — fall back to OCR.
+        ocr_pages = parse_pdf_via_ocr(filepath)
+        if ocr_pages:
+            return ocr_pages
+
     return pages
 
 

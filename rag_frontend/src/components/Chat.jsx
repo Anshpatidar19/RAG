@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { askQuestion, textToSpeech } from "../api/client";
+import { askQuestionStream, textToSpeech } from "../api/client";
 
 const SpeechRecognitionAPI =
   typeof window !== "undefined"
@@ -12,13 +12,17 @@ export default function Chat({ messages, onNewMessage }) {
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState(null);
+  const [pendingQuestion, setPendingQuestion] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [streamingText, setStreamingText] = useState("");
+
   const bottomRef = useRef(null);
   const recognitionRef = useRef(null);
   const audioRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, streamingText]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -27,20 +31,50 @@ export default function Chat({ messages, onNewMessage }) {
 
     setLoading(true);
     setError("");
-    try {
-      const result = await askQuestion(trimmed);
-      onNewMessage({
-        question: trimmed,
-        answer: result.answer,
-        sources: result.sources,
-        answerable: result.answerable,
-      });
-      setQuestion("");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    setPendingQuestion(trimmed);
+    setStatusMessage("Starting...");
+    setStreamingText("");
+    setQuestion("");
+
+    let finalText = "";
+    let finalSources = [];
+    let finalAnswerable = true;
+
+    const history = messages.slice(-6).map((turn) => ({
+      question: turn.question,
+      answer: turn.answer,
+    }));
+
+    await askQuestionStream(trimmed, history, {
+      onStatus: (msg) => setStatusMessage(msg),
+      onToken: (text) => {
+        finalText += text;
+        setStreamingText(finalText);
+      },
+      onSources: (sources, answerable) => {
+        finalSources = sources;
+        finalAnswerable = answerable;
+      },
+      onDone: () => {
+        onNewMessage({
+          question: trimmed,
+          answer: finalText,
+          sources: finalSources,
+          answerable: finalAnswerable,
+        });
+        setStreamingText("");
+        setStatusMessage("");
+        setPendingQuestion("");
+        setLoading(false);
+      },
+      onError: (msg) => {
+        setError(msg);
+        setStreamingText("");
+        setStatusMessage("");
+        setPendingQuestion("");
+        setLoading(false);
+      },
+    });
   }
 
   function toggleListening() {
@@ -56,19 +90,27 @@ export default function Chat({ messages, onNewMessage }) {
 
     const recognition = new SpeechRecognitionAPI();
     recognition.lang = "en-US";
+    recognition.continuous = false;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
+    // Only read NEW results starting at event.resultIndex — reading
+    // results[0] unconditionally re-appends the first-ever recognized
+    // phrase every time onresult fires again, which is what caused
+    // the repeated/duplicated text.
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      setQuestion((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      let finalTranscript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        }
+      }
+      if (finalTranscript) {
+        setQuestion((prev) => (prev ? `${prev} ${finalTranscript}`.trim() : finalTranscript.trim()));
+      }
     };
-    recognition.onerror = () => {
-      setListening(false);
-    };
-    recognition.onend = () => {
-      setListening(false);
-    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
 
     recognitionRef.current = recognition;
     recognition.start();
@@ -76,16 +118,27 @@ export default function Chat({ messages, onNewMessage }) {
   }
 
   async function handleSpeak(text, index) {
+    // Always stop whatever is currently playing first — clicking a
+    // different answer's speaker while one is already playing used to
+    // leave the old audio running in the background, which made it
+    // look like playback "couldn't be stopped."
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+
     if (speakingIndex === index) {
-      audioRef.current?.pause();
       setSpeakingIndex(null);
       return;
     }
+
     try {
       setSpeakingIndex(index);
       const blob = await textToSpeech(text);
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
+      audio.playbackRate = 1.25;
       audioRef.current = audio;
       audio.onended = () => setSpeakingIndex(null);
       audio.onerror = () => setSpeakingIndex(null);
@@ -99,7 +152,7 @@ export default function Chat({ messages, onNewMessage }) {
   return (
     <div className="chat-panel">
       <div className="chat-history">
-        {messages.length === 0 && (
+        {messages.length === 0 && !loading && (
           <p className="chat-empty">Ask a question about your uploaded documents.</p>
         )}
         {messages.map((turn, i) => (
@@ -145,13 +198,17 @@ export default function Chat({ messages, onNewMessage }) {
                         {source.page_number !== null && source.page_number !== undefined && (
                           <span className="source-page">p.{source.page_number}</span>
                         )}
-                        <span className="source-score-bar" aria-hidden="true">
-                          <span
-                            className="source-score-fill"
-                            style={{ width: `${Math.round(source.score * 100)}%` }}
-                          />
-                        </span>
-                        <span className="source-score-value">{source.score.toFixed(2)}</span>
+                        {source.type !== "web" && (
+                          <>
+                            <span className="source-score-bar" aria-hidden="true">
+                              <span
+                                className="source-score-fill"
+                                style={{ width: `${Math.round(source.score * 100)}%` }}
+                              />
+                            </span>
+                            <span className="source-score-value">{source.score.toFixed(2)}</span>
+                          </>
+                        )}
                       </div>
                       <p className="source-snippet">{source.text_snippet}</p>
                     </li>
@@ -163,12 +220,20 @@ export default function Chat({ messages, onNewMessage }) {
         ))}
         {loading && (
           <div className="chat-turn">
-            <p className="chat-question">{question}</p>
-            <p className="chat-thinking">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-            </p>
+            <p className="chat-question">{pendingQuestion}</p>
+            {streamingText ? (
+              <p className="chat-answer">
+                {streamingText}
+                <span className="stream-cursor">▌</span>
+              </p>
+            ) : (
+              <p className="chat-status">
+                <span className="dot" />
+                <span className="dot" />
+                <span className="dot" />
+                <span className="chat-status-text">{statusMessage}</span>
+              </p>
+            )}
           </div>
         )}
         <div ref={bottomRef} />

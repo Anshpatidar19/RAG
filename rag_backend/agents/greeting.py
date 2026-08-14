@@ -32,3 +32,17 @@ class GreetingAgent:
             },
         )
         return response.text or ""
+
+    def respond_stream(self, message: str):
+        stream = self.client.models.generate_content_stream(
+            model=self.model,
+            contents=message,
+            config={
+                "system_instruction": SYSTEM_PROMPT,
+                "max_output_tokens": 256,
+                "thinking_config": {"thinking_budget": 0},
+            },
+        )
+        for chunk in stream:
+            if chunk.text:
+                yield chunk.text
