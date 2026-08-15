@@ -5,12 +5,14 @@ for the React frontend to call. Run with:
     uvicorn api:app --reload
 """
 
+import hashlib
 import io
 import json
 import mimetypes
 import re
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -20,8 +22,6 @@ from gtts import gTTS
 from google import genai
 from pydantic import BaseModel
 
-from ingestion.web_parser import WebFetchError, fetch_page
-
 from agents.greeting import GreetingAgent
 from agents.reflection import ReflectionAgent
 from agents.supervision import Supervisor
@@ -29,17 +29,17 @@ from config import settings
 from embedding.embedder import Embedder
 from generation.generator import AnswerGenerator
 from ingestion.pipeline import IngestionPipeline
+from ingestion.web_parser import WebFetchError, fetch_page
 from kb.knowledge_base import KnowledgeBase
 from retrieval.retriever import Retriever
 from retrieval.vector_search import VectorSearchTool
 from retrieval.web_search import WebSearchTool
+from storage.conversation_repository import ConversationRepository
 from storage.document_repository import DocumentRepository
 from storage.vector_store import VectorStoreRepository
 
 app = FastAPI(title="Universal RAG API")
 
-# Allow the Vite dev server to call this API. Add your deployed
-# frontend's URL here too once you host it somewhere.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -48,14 +48,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Where original uploaded files are kept permanently, so they can be opened later ---
 FILES_DIR = Path(__file__).parent / "uploaded_files"
 FILES_DIR.mkdir(exist_ok=True)
 
-# --- Wiring: document CRUD (unchanged) ---
+# --- Wiring: document CRUD + chat history ---
 _embedder = Embedder()
 _vector_store = VectorStoreRepository()
 _document_repository = DocumentRepository()
+_conversation_repository = ConversationRepository()
 _pipeline = IngestionPipeline(_embedder, _vector_store)
 _retriever = Retriever(_embedder, _vector_store)
 _generator = AnswerGenerator()
@@ -81,6 +81,7 @@ supervisor = Supervisor(
 class AskRequest(BaseModel):
     question: str
     history: list[dict] = []
+    conversation_id: str | None = None
 
 
 class TTSRequest(BaseModel):
@@ -91,9 +92,13 @@ class UrlIngestRequest(BaseModel):
     url: str
 
 
+class CreateConversationRequest(BaseModel):
+    title: str = "New chat"
+
+
 class SourceResponse(BaseModel):
-    type: str  # "document" | "web"
-    label: str  # filename for documents, page title for web
+    type: str
+    label: str
     url: str | None = None
     page_number: int | None = None
     score: float
@@ -104,6 +109,7 @@ class AskResponse(BaseModel):
     answer: str
     answerable: bool
     sources: list[SourceResponse]
+    conversation_id: str
 
 
 class DocumentResponse(BaseModel):
@@ -112,38 +118,41 @@ class DocumentResponse(BaseModel):
     status: str
     num_chunks: int
     file_url: str
+    duplicate: bool = False
 
 
 # --- Helpers ---
-def _to_document_response(doc) -> DocumentResponse:
+def _to_document_response(doc, duplicate: bool = False) -> DocumentResponse:
     return DocumentResponse(
         doc_id=doc.doc_id,
         filename=doc.filename,
         status=doc.status.value,
         num_chunks=doc.num_chunks,
         file_url=f"/documents/{doc.doc_id}/file",
+        duplicate=duplicate,
     )
 
 
-def _save_upload_to_temp(file: UploadFile) -> str:
-    suffix = Path(file.filename).suffix
+def _hash_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _save_bytes_to_temp(content: bytes, suffix: str) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        shutil.copyfileobj(file.file, tmp)
+        tmp.write(content)
         return tmp.name
 
 
 def _persist_file(tmp_path: str, doc_id: str, original_filename: str) -> str:
-    """Move the temp upload into permanent storage, named by doc_id so it survives restarts."""
     suffix = Path(original_filename).suffix
     dest = FILES_DIR / f"{doc_id}{suffix}"
-    # Clean up any previous file for this doc_id (relevant on update, if extension changed)
     for existing in FILES_DIR.glob(f"{doc_id}.*"):
         existing.unlink(missing_ok=True)
     shutil.move(tmp_path, dest)
     return str(dest)
 
 
-# --- Endpoints ---
+# --- Document endpoints ---
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -151,11 +160,21 @@ def health():
 
 @app.post("/documents", response_model=DocumentResponse)
 def upload_document(file: UploadFile = File(...)):
-    tmp_path = _save_upload_to_temp(file)
+    content = file.file.read()
+    content_hash = _hash_bytes(content)
+
+    existing = kb.document_repository.get_by_content_hash(content_hash)
+    if existing is not None:
+        # Identical file already indexed — skip parsing/chunking/embedding
+        # entirely and just tell the frontend this is the existing document.
+        return _to_document_response(existing, duplicate=True)
+
+    tmp_path = _save_bytes_to_temp(content, Path(file.filename).suffix)
     try:
         document = kb.add_document(tmp_path, display_filename=file.filename)
         permanent_path = _persist_file(tmp_path, document.doc_id, file.filename)
         document.filepath = permanent_path
+        document.content_hash = content_hash
         kb.document_repository.save(document)
         return _to_document_response(document)
     except Exception as exc:
@@ -176,6 +195,11 @@ def ingest_url(request: UrlIngestRequest):
     except WebFetchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    content_hash = _hash_bytes(text.encode("utf-8"))
+    existing = kb.document_repository.get_by_content_hash(content_hash)
+    if existing is not None:
+        return _to_document_response(existing, duplicate=True)
+
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -185,9 +209,8 @@ def ingest_url(request: UrlIngestRequest):
             tmp_path = tmp.name
 
         document = kb.add_document(tmp_path, display_filename=title)
-        # Store the original URL as the document's "location" instead of a
-        # local file path, so opening it later takes you to the live page.
         document.filepath = request.url
+        document.content_hash = content_hash
         kb.document_repository.save(document)
         return _to_document_response(document)
     except Exception as exc:
@@ -233,11 +256,14 @@ def delete_document(doc_id: str):
 def update_document(doc_id: str, file: UploadFile = File(...)):
     if kb.get_document(doc_id) is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    tmp_path = _save_upload_to_temp(file)
+    content = file.file.read()
+    content_hash = _hash_bytes(content)
+    tmp_path = _save_bytes_to_temp(content, Path(file.filename).suffix)
     try:
         document = kb.update_document(doc_id, tmp_path, display_filename=file.filename)
         permanent_path = _persist_file(tmp_path, document.doc_id, file.filename)
         document.filepath = permanent_path
+        document.content_hash = content_hash
         kb.document_repository.save(document)
         return _to_document_response(document)
     except Exception as exc:
@@ -246,8 +272,43 @@ def update_document(doc_id: str, file: UploadFile = File(...)):
         Path(tmp_path).unlink(missing_ok=True)
 
 
+# --- Conversation endpoints ---
+@app.get("/conversations")
+def list_conversations():
+    return _conversation_repository.list_conversations()
+
+
+@app.post("/conversations")
+def create_conversation(request: CreateConversationRequest):
+    conversation_id = str(uuid.uuid4())
+    _conversation_repository.create_conversation(conversation_id, request.title)
+    return {"id": conversation_id, "title": request.title}
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_conversation_messages(conversation_id: str):
+    return _conversation_repository.get_messages(conversation_id)
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    _conversation_repository.delete_conversation(conversation_id)
+    return {"deleted": conversation_id}
+
+
+# --- Ask endpoints ---
+def _ensure_conversation(conversation_id: str | None, first_message: str) -> str:
+    if conversation_id:
+        return conversation_id
+    new_id = str(uuid.uuid4())
+    title = first_message[:40] + ("…" if len(first_message) > 40 else "")
+    _conversation_repository.create_conversation(new_id, title)
+    return new_id
+
+
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
+    conversation_id = _ensure_conversation(request.conversation_id, request.question)
     result = supervisor.handle(request.question, history=request.history)
 
     sources: list[SourceResponse] = []
@@ -272,17 +333,36 @@ def ask(request: AskRequest):
             )
         )
 
+    trimmed_sources = sources[: settings.max_sources_shown]
+    _conversation_repository.add_message(conversation_id, "user", request.question)
+    _conversation_repository.add_message(
+        conversation_id,
+        "assistant",
+        result.text,
+        sources=[s.model_dump() for s in trimmed_sources],
+    )
+
     return AskResponse(
         answer=result.text,
         answerable=result.answerable,
-        sources=sources[: settings.max_sources_shown],
+        sources=trimmed_sources,
+        conversation_id=conversation_id,
     )
 
 
 @app.post("/ask/stream")
 def ask_stream(request: AskRequest):
+    conversation_id = _ensure_conversation(request.conversation_id, request.question)
+
     def event_generator():
+        yield f"data: {json.dumps({'type': 'conversation_id', 'conversation_id': conversation_id})}\n\n"
+
+        final_text = ""
+        final_sources_payload = []
+
         for event in supervisor.handle_stream(request.question, history=request.history):
+            if event["type"] == "token":
+                final_text += event["text"]
             if event["type"] == "sources":
                 sources_payload = []
                 for r in event["doc_sources"]:
@@ -307,14 +387,20 @@ def ask_stream(request: AskRequest):
                             "text_snippet": w.snippet[:200],
                         }
                     )
+                final_sources_payload = sources_payload[: settings.max_sources_shown]
                 payload = {
                     "type": "sources",
-                    "sources": sources_payload[: settings.max_sources_shown],
+                    "sources": final_sources_payload,
                     "answerable": event["answerable"],
                 }
             else:
                 payload = event
             yield f"data: {json.dumps(payload)}\n\n"
+
+        _conversation_repository.add_message(conversation_id, "user", request.question)
+        _conversation_repository.add_message(
+            conversation_id, "assistant", final_text, sources=final_sources_payload
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -335,17 +421,12 @@ def text_to_speech(request: TTSRequest):
 
 
 def _clean_for_speech(text: str) -> str:
-    """
-    Strips markdown formatting that TTS engines otherwise read aloud
-    literally (asterisks, bullet dashes, headers, backticks) so the
-    spoken answer sounds natural instead of narrating symbols.
-    """
     text = text.strip()
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)  # **bold**
-    text = re.sub(r"\*(.*?)\*", r"\1", text)  # *italic*
-    text = re.sub(r"`(.*?)`", r"\1", text)  # `code`
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)  # # headers
-    text = re.sub(r"^[-*+]\s+", "", text, flags=re.MULTILINE)  # bullet markers
-    text = re.sub(r"[_~]", "", text)  # stray underscores/tildes
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.*?)\*", r"\1", text)
+    text = re.sub(r"`(.*?)`", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"[_~]", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()

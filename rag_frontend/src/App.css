@@ -227,6 +227,13 @@ a:focus-visible {
   margin: 0;
 }
 
+.upload-notice {
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
 .add-url-form {
   display: flex;
   gap: 6px;

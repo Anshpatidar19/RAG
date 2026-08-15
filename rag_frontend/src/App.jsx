@@ -1,21 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import Chat from "./components/Chat";
-import { listDocuments } from "./api/client";
+import {
+  listDocuments,
+  listConversations,
+  createConversation,
+  getConversationMessages,
+} from "./api/client";
 import "./App.css";
 
-function makeConversation() {
-  return { id: crypto.randomUUID(), title: "New chat", messages: [] };
-}
-
-function titleFromQuestion(question) {
-  const trimmed = question.trim();
-  return trimmed.length > 40 ? trimmed.slice(0, 40) + "…" : trimmed;
+function sourcesFromServer(sources) {
+  return (sources || []).map((s) => ({
+    type: s.type,
+    label: s.label,
+    url: s.url,
+    page_number: s.page_number,
+    score: s.score,
+    text_snippet: s.text_snippet,
+  }));
 }
 
 export default function App() {
-  const [conversations, setConversations] = useState([makeConversation()]);
-  const [activeId, setActiveId] = useState(conversations[0].id);
+  const [conversations, setConversations] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [activeMessages, setActiveMessages] = useState([]);
 
   const [documents, setDocuments] = useState([]);
   const [documentsError, setDocumentsError] = useState("");
@@ -30,35 +38,72 @@ export default function App() {
     }
   }, []);
 
+  const refreshConversations = useCallback(async () => {
+    try {
+      const convos = await listConversations();
+      setConversations(convos);
+      return convos;
+    } catch {
+      return [];
+    }
+  }, []);
+
   useEffect(() => {
     refreshDocuments();
-  }, [refreshDocuments]);
+    refreshConversations();
+  }, [refreshDocuments, refreshConversations]);
 
-  function handleNewChat() {
-    const fresh = makeConversation();
-    setConversations((prev) => [fresh, ...prev]);
-    setActiveId(fresh.id);
+  async function loadConversation(id) {
+    setActiveId(id);
+    try {
+      const messages = await getConversationMessages(id);
+      const paired = [];
+      for (let i = 0; i < messages.length; i++) {
+        if (messages[i].role === "user" && messages[i + 1]?.role === "assistant") {
+          const assistantMsg = messages[i + 1];
+          paired.push({
+            question: messages[i].content,
+            answer: assistantMsg.content,
+            sources: sourcesFromServer(assistantMsg.sources),
+            answerable: (assistantMsg.sources || []).length > 0 || true,
+          });
+          i++;
+        }
+      }
+      setActiveMessages(paired);
+    } catch {
+      setActiveMessages([]);
+    }
+  }
+
+  async function handleNewChat() {
+    try {
+      const convo = await createConversation("New chat");
+      setConversations((prev) => [{ id: convo.id, title: convo.title }, ...prev]);
+      setActiveId(convo.id);
+      setActiveMessages([]);
+    } catch {
+      // If conversation creation fails, the first /ask call will create
+      // one server-side anyway (conversation_id starts null).
+      setActiveId(null);
+      setActiveMessages([]);
+    }
   }
 
   function handleSelectChat(id) {
-    setActiveId(id);
+    loadConversation(id);
   }
 
   function handleNewMessage(turn) {
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id !== activeId) return c;
-        const isFirstMessage = c.messages.length === 0;
-        return {
-          ...c,
-          title: isFirstMessage ? titleFromQuestion(turn.question) : c.title,
-          messages: [...c.messages, turn],
-        };
-      })
-    );
+    setActiveMessages((prev) => [...prev, turn]);
   }
 
-  const activeConversation = conversations.find((c) => c.id === activeId);
+  function handleConversationCreated(id) {
+    if (!activeId) {
+      setActiveId(id);
+      refreshConversations();
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -73,9 +118,14 @@ export default function App() {
       />
       <main className="main-column">
         <header className="main-header">
-          <span className="brand"> 🤖 AGENTIC RAG</span>
+          <span className="brand">▲ Universal RAG</span>
         </header>
-        <Chat messages={activeConversation.messages} onNewMessage={handleNewMessage} />
+        <Chat
+          conversationId={activeId}
+          messages={activeMessages}
+          onNewMessage={handleNewMessage}
+          onConversationCreated={handleConversationCreated}
+        />
       </main>
     </div>
   );

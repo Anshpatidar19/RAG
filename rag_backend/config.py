@@ -38,6 +38,10 @@ class Settings:
     # Mistral (image OCR — optional, only needed if uploading image files)
     mistral_api_key: str | None
 
+    # Supabase (document metadata + chat history)
+    supabase_url: str
+    supabase_key: str
+
     # Embedding
     embedding_model: str
 
@@ -57,6 +61,8 @@ def load_settings() -> Settings:
         pinecone_index_name=_get_required("PINECONE_INDEX_NAME"),
         gemini_api_key=_get_required("GEMINI_API_KEY"),
         mistral_api_key=_get_optional("MISTRAL_API_KEY"),
+        supabase_url=_get_required("SUPABASE_URL"),
+        supabase_key=_get_required("SUPABASE_KEY"),
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
         chunk_size=int(os.getenv("CHUNK_SIZE", "800")),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "100")),

@@ -32,6 +32,9 @@ mistralai==1.5.1
 requests==2.32.3
 beautifulsoup4==4.12.3
 
+# Supabase (document metadata + chat history)
+supabase==2.10.0
+
 # Config / env
 python-dotenv==1.0.1
 

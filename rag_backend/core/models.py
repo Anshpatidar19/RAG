@@ -16,6 +16,7 @@ class Document:
     status: DocumentStatus
     uploaded_at: datetime
     num_chunks: int = 0
+    content_hash: str | None = None
 
 
 @dataclass

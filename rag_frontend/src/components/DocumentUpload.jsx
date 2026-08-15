@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { uploadDocument } from "../api/client";
 
 export default function DocumentUpload({ onUploaded }) {
-  const [status, setStatus] = useState("idle"); // idle | uploading | error
+  const [status, setStatus] = useState("idle"); // idle | uploading | error | duplicate
   const [errorMessage, setErrorMessage] = useState("");
   const inputRef = useRef(null);
 
@@ -15,7 +15,7 @@ export default function DocumentUpload({ onUploaded }) {
 
     try {
       const document = await uploadDocument(file);
-      setStatus("idle");
+      setStatus(document.duplicate ? "duplicate" : "idle");
       onUploaded?.(document);
     } catch (err) {
       setStatus("error");
@@ -40,6 +40,9 @@ export default function DocumentUpload({ onUploaded }) {
       </label>
       {status === "error" && (
         <p className="upload-error">Upload failed: {errorMessage}</p>
+      )}
+      {status === "duplicate" && (
+        <p className="upload-notice">Already in your knowledge base — skipped re-processing.</p>
       )}
     </div>
   );

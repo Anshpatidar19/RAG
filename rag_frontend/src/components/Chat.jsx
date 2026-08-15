@@ -21,7 +21,7 @@ function cleanForSpeech(text) {
     .trim();
 }
 
-export default function Chat({ messages, onNewMessage }) {
+export default function Chat({ conversationId, messages, onNewMessage, onConversationCreated }) {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -136,7 +136,7 @@ export default function Chat({ messages, onNewMessage }) {
       answer: turn.answer,
     }));
 
-    await askQuestionStream(trimmed, history, {
+    await askQuestionStream(trimmed, history, conversationId, {
       onStatus: (msg) => setStatusMessage(msg),
       onToken: (chunk) => {
         finalText += chunk;
@@ -145,6 +145,9 @@ export default function Chat({ messages, onNewMessage }) {
       onSources: (sources, answerable) => {
         finalSources = sources;
         finalAnswerable = answerable;
+      },
+      onConversationId: (id) => {
+        onConversationCreated?.(id);
       },
       onDone: () => {
         onNewMessage({

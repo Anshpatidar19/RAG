@@ -63,16 +63,43 @@ export async function askQuestion(question) {
   return handleResponse(res);
 }
 
+export async function listConversations() {
+  const res = await fetch(`${BASE_URL}/conversations`);
+  return handleResponse(res);
+}
+
+export async function createConversation(title = "New chat") {
+  const res = await fetch(`${BASE_URL}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return handleResponse(res);
+}
+
+export async function getConversationMessages(conversationId) {
+  const res = await fetch(`${BASE_URL}/conversations/${conversationId}/messages`);
+  return handleResponse(res);
+}
+
+export async function deleteConversation(conversationId) {
+  const res = await fetch(`${BASE_URL}/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
+  return handleResponse(res);
+}
+
 export async function askQuestionStream(
   question,
   history,
-  { onStatus, onToken, onSources, onDone, onError }
+  conversationId,
+  { onStatus, onToken, onSources, onConversationId, onDone, onError }
 ) {
   try {
     const res = await fetch(`${BASE_URL}/ask/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ question, history, conversation_id: conversationId }),
     });
     if (!res.ok || !res.body) {
       throw new Error(`Request failed with status ${res.status}`);
@@ -99,6 +126,7 @@ export async function askQuestionStream(
         if (event.type === "status") onStatus?.(event.message);
         else if (event.type === "token") onToken?.(event.text);
         else if (event.type === "sources") onSources?.(event.sources, event.answerable);
+        else if (event.type === "conversation_id") onConversationId?.(event.conversation_id);
         else if (event.type === "done") onDone?.();
       }
     }
