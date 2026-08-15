@@ -15,10 +15,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from gtts import gTTS
 from google import genai
 from pydantic import BaseModel
+
+from ingestion.web_parser import WebFetchError, fetch_page
 
 from agents.greeting import GreetingAgent
 from agents.reflection import ReflectionAgent
@@ -83,6 +85,10 @@ class AskRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+
+
+class UrlIngestRequest(BaseModel):
+    url: str
 
 
 class SourceResponse(BaseModel):
@@ -163,11 +169,43 @@ def list_documents():
     return [_to_document_response(d) for d in kb.list_documents()]
 
 
+@app.post("/documents/url", response_model=DocumentResponse)
+def ingest_url(request: UrlIngestRequest):
+    try:
+        title, text = fetch_page(request.url)
+    except WebFetchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", delete=False, suffix=".txt", encoding="utf-8"
+        ) as tmp:
+            tmp.write(text)
+            tmp_path = tmp.name
+
+        document = kb.add_document(tmp_path, display_filename=title)
+        # Store the original URL as the document's "location" instead of a
+        # local file path, so opening it later takes you to the live page.
+        document.filepath = request.url
+        kb.document_repository.save(document)
+        return _to_document_response(document)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
 @app.get("/documents/{doc_id}/file")
 def get_document_file(doc_id: str):
     document = kb.get_document(doc_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    if document.filepath.startswith("http://") or document.filepath.startswith("https://"):
+        return RedirectResponse(url=document.filepath)
+
     file_path = Path(document.filepath)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
@@ -186,7 +224,8 @@ def delete_document(doc_id: str):
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     kb.delete_document(doc_id)
-    Path(document.filepath).unlink(missing_ok=True)
+    if not (document.filepath.startswith("http://") or document.filepath.startswith("https://")):
+        Path(document.filepath).unlink(missing_ok=True)
     return {"deleted": doc_id}
 
 
@@ -233,7 +272,11 @@ def ask(request: AskRequest):
             )
         )
 
-    return AskResponse(answer=result.text, answerable=result.answerable, sources=sources)
+    return AskResponse(
+        answer=result.text,
+        answerable=result.answerable,
+        sources=sources[: settings.max_sources_shown],
+    )
 
 
 @app.post("/ask/stream")
@@ -266,7 +309,7 @@ def ask_stream(request: AskRequest):
                     )
                 payload = {
                     "type": "sources",
-                    "sources": sources_payload,
+                    "sources": sources_payload[: settings.max_sources_shown],
                     "answerable": event["answerable"],
                 }
             else:

@@ -28,6 +28,15 @@ export async function uploadDocument(file) {
   return handleResponse(res);
 }
 
+export async function ingestUrl(url) {
+  const res = await fetch(`${BASE_URL}/documents/url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  return handleResponse(res);
+}
+
 export async function updateDocument(docId, file) {
   const formData = new FormData();
   formData.append("file", file);

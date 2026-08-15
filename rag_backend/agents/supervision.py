@@ -124,12 +124,16 @@ class Supervisor:
 
     def handle(self, message: str, history: list[dict] | None = None) -> AgentAnswer:
 
-        search_query = self._standalone_query(message, history)
-
-        # 1. Greeting / casual query
-        if self._is_greeting(search_query):
+        # Check greeting on the RAW message first — rewriting into a
+        # standalone query using history can turn "hi"/"thanks" into
+        # something that no longer looks like a greeting, which was
+        # causing greetings to be misrouted into document search once
+        # a conversation had any history.
+        if self._is_greeting(message):
             text = self.greeting_agent.respond(message)
             return AgentAnswer(text=text, answerable=True)
+
+        search_query = self._standalone_query(message, history)
 
         # 2. Search knowledge base
         doc_results = self.vector_search.search(search_query)
@@ -189,17 +193,19 @@ class Supervisor:
 
         yield {"type": "status", "message": "Reading your message..."}
 
-        if history:
-            yield {"type": "status", "message": "Understanding your question..."}
-        search_query = self._standalone_query(message, history)
-
-        if self._is_greeting(search_query):
+        # Check greeting on the RAW message first, before any history-based
+        # rewrite — same reasoning as handle() above.
+        if self._is_greeting(message):
             yield {"type": "status", "message": "Responding..."}
             for token in self.greeting_agent.respond_stream(message):
                 yield {"type": "token", "text": token}
             yield {"type": "sources", "doc_sources": [], "web_sources": [], "answerable": True}
             yield {"type": "done"}
             return
+
+        if history:
+            yield {"type": "status", "message": "Understanding your question..."}
+        search_query = self._standalone_query(message, history)
 
         yield {"type": "status", "message": "Searching your documents..."}
         doc_results = self.vector_search.search(search_query)

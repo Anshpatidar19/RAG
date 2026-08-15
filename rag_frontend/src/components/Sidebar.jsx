@@ -1,6 +1,7 @@
 import { useState } from "react";
 import DocumentUpload from "./DocumentUpload";
 import DocumentList from "./DocumentList";
+import AddUrl from "./AddUrl";
 
 export default function Sidebar({
   conversations,
@@ -42,6 +43,7 @@ export default function Sidebar({
         {kbOpen && (
           <div className="sidebar-kb-body">
             <DocumentUpload onUploaded={onDocsChanged} />
+            <AddUrl onAdded={onDocsChanged} />
             {documentsError && <p className="document-list-error">{documentsError}</p>}
             <DocumentList documents={documents} onChanged={onDocsChanged} />
           </div>

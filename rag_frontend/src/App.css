@@ -227,6 +227,49 @@ a:focus-visible {
   margin: 0;
 }
 
+.add-url-form {
+  display: flex;
+  gap: 6px;
+}
+
+.add-url-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.add-url-form input::placeholder {
+  color: var(--text-muted);
+}
+
+.add-url-form button {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.add-url-form button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.add-url-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* --- Document list --- */
 .document-list-empty {
   color: var(--text-muted);
