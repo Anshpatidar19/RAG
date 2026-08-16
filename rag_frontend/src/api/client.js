@@ -127,6 +127,7 @@ export async function askQuestionStream(
         else if (event.type === "token") onToken?.(event.text);
         else if (event.type === "sources") onSources?.(event.sources, event.answerable);
         else if (event.type === "conversation_id") onConversationId?.(event.conversation_id);
+        else if (event.type === "error") onError?.(event.message);
         else if (event.type === "done") onDone?.();
       }
     }

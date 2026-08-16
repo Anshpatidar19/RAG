@@ -10,11 +10,18 @@ from dataclasses import dataclass
 
 from google import genai
 
+from agents.retry_utils import generate_with_retry
+
 SYSTEM_PROMPT = """You judge whether the given evidence is sufficient to answer \
 the given question.
 
+Treat evidence as SUFFICIENT even if answering it requires a straightforward \
+computation over the evidence — for example, reading a number off a table, \
+summing figures, or combining two facts stated in the evidence. That is still \
+answering FROM the evidence.
+
 Respond with EXACTLY one word on the first line:
-- SUFFICIENT — the evidence directly answers the question
+- SUFFICIENT — the evidence (directly, or via simple computation on it) answers the question
 - INSUFFICIENT — the evidence is missing, off-topic, or only tangentially related
 
 On the second line, give a one-sentence reason."""
@@ -40,7 +47,8 @@ class ReflectionAgent:
 Evidence:
 {evidence_text}"""
 
-        response = self.client.models.generate_content(
+        response = generate_with_retry(
+            self.client,
             model=self.model,
             contents=prompt,
             config={

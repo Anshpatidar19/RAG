@@ -8,6 +8,7 @@ export default function Sidebar({
   activeId,
   onNewChat,
   onSelectChat,
+  onDeleteChat,
   documents,
   documentsError,
   onDocsChanged,
@@ -25,13 +26,24 @@ export default function Sidebar({
           <p className="conversation-list-empty">No chats yet.</p>
         )}
         {conversations.map((c) => (
-          <button
+          <div
             key={c.id}
-            className={`conversation-item ${c.id === activeId ? "active" : ""}`}
-            onClick={() => onSelectChat(c.id)}
+            className={`conversation-row ${c.id === activeId ? "active" : ""}`}
           >
-            {c.title}
-          </button>
+            <button className="conversation-item" onClick={() => onSelectChat(c.id)}>
+              {c.title}
+            </button>
+            <button
+              className="conversation-delete"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteChat(c.id);
+              }}
+              title="Delete chat"
+            >
+              ✕
+            </button>
+          </div>
         ))}
       </div>
 

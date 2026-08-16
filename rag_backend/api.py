@@ -12,6 +12,7 @@ import mimetypes
 import re
 import shutil
 import tempfile
+import traceback
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from gtts import gTTS
 from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 from agents.greeting import GreetingAgent
@@ -101,7 +103,7 @@ class SourceResponse(BaseModel):
     label: str
     url: str | None = None
     page_number: int | None = None
-    score: float
+    score: float | None = None
     text_snippet: str
 
 
@@ -309,7 +311,22 @@ def _ensure_conversation(conversation_id: str | None, first_message: str) -> str
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
     conversation_id = _ensure_conversation(request.conversation_id, request.question)
-    result = supervisor.handle(request.question, history=request.history)
+    try:
+        result = supervisor.handle(request.question, history=request.history)
+    except genai_errors.ServerError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The AI model is temporarily overloaded. Please try again in a moment.",
+        ) from exc
+    except Exception as exc:
+        # Any other unexpected failure (Pinecone connection drop, etc.) —
+        # log the real traceback server-side for debugging, but return a
+        # clean message to the client instead of an unhandled 500.
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=503,
+            detail="Something went wrong reaching a backend service. Please try again.",
+        ) from exc
 
     sources: list[SourceResponse] = []
     for r in result.doc_sources:
@@ -328,7 +345,6 @@ def ask(request: AskRequest):
                 type="web",
                 label=w.title,
                 url=w.url,
-                score=w.score,
                 text_snippet=w.snippet[:200],
             )
         )
@@ -360,42 +376,52 @@ def ask_stream(request: AskRequest):
         final_text = ""
         final_sources_payload = []
 
-        for event in supervisor.handle_stream(request.question, history=request.history):
-            if event["type"] == "token":
-                final_text += event["text"]
-            if event["type"] == "sources":
-                sources_payload = []
-                for r in event["doc_sources"]:
-                    sources_payload.append(
-                        {
-                            "type": "document",
-                            "label": r.source_filename,
-                            "url": None,
-                            "page_number": r.chunk.page_number,
-                            "score": r.score,
-                            "text_snippet": r.chunk.text[:200],
-                        }
-                    )
-                for w in event["web_sources"]:
-                    sources_payload.append(
-                        {
-                            "type": "web",
-                            "label": w.title,
-                            "url": w.url,
-                            "page_number": None,
-                            "score": w.score,
-                            "text_snippet": w.snippet[:200],
-                        }
-                    )
-                final_sources_payload = sources_payload[: settings.max_sources_shown]
-                payload = {
-                    "type": "sources",
-                    "sources": final_sources_payload,
-                    "answerable": event["answerable"],
-                }
-            else:
-                payload = event
-            yield f"data: {json.dumps(payload)}\n\n"
+        try:
+            for event in supervisor.handle_stream(request.question, history=request.history):
+                if event["type"] == "token":
+                    final_text += event["text"]
+                if event["type"] == "sources":
+                    sources_payload = []
+                    for r in event["doc_sources"]:
+                        sources_payload.append(
+                            {
+                                "type": "document",
+                                "label": r.source_filename,
+                                "url": None,
+                                "page_number": r.chunk.page_number,
+                                "score": r.score,
+                                "text_snippet": r.chunk.text[:200],
+                            }
+                        )
+                    for w in event["web_sources"]:
+                        sources_payload.append(
+                            {
+                                "type": "web",
+                                "label": w.title,
+                                "url": w.url,
+                                "page_number": None,
+                                "text_snippet": w.snippet[:200],
+                            }
+                        )
+                    final_sources_payload = sources_payload[: settings.max_sources_shown]
+                    payload = {
+                        "type": "sources",
+                        "sources": final_sources_payload,
+                        "answerable": event["answerable"],
+                    }
+                else:
+                    payload = event
+                yield f"data: {json.dumps(payload)}\n\n"
+        except genai_errors.ServerError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'The AI model is temporarily overloaded. Please try again in a moment.'})}\n\n"
+            return
+        except Exception:
+            # Any other unexpected failure (Pinecone connection drop, etc.) —
+            # log the real traceback server-side, send a clean message to
+            # the client instead of the stream just breaking silently.
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Something went wrong reaching a backend service. Please try again.'})}\n\n"
+            return
 
         _conversation_repository.add_message(conversation_id, "user", request.question)
         _conversation_repository.add_message(

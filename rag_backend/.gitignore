@@ -6,4 +6,4 @@ rag_metadata.db
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-.uploaded_files/
+uploaded_files/

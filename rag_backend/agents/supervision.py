@@ -56,6 +56,7 @@ from google import genai
 
 from agents.greeting import GreetingAgent
 from agents.reflection import ReflectionAgent
+from agents.retry_utils import generate_stream_with_retry, generate_with_retry
 from core.models import RetrievalResult
 from retrieval.retriever import Retriever
 from retrieval.vector_search import VectorSearchTool
@@ -75,7 +76,14 @@ Respond with exactly one word, nothing else."""
 
 
 ANSWER_SYSTEM_PROMPT = """You are a helpful assistant. Answer the question using \
-ONLY the provided evidence. Do not use outside knowledge beyond the evidence given.
+ONLY the facts present in the provided evidence — do not bring in outside knowledge \
+the evidence doesn't support.
+
+You MAY perform straightforward computation or synthesis over the evidence itself \
+— for example, reading a percentage or total off a table, summing figures, or \
+combining two facts stated in the evidence. That counts as answering FROM the \
+evidence, not as outside knowledge.
+
 Be concise and direct. Do not mention "the evidence" or "the context" explicitly \
 — answer naturally, as if you know this information."""
 
@@ -275,7 +283,8 @@ class Supervisor:
 
 Follow-up question: {message}"""
 
-        response = self.client.models.generate_content(
+        response = generate_with_retry(
+            self.client,
             model=self.model,
             contents=prompt,
             config={
@@ -288,7 +297,8 @@ Follow-up question: {message}"""
         return rewritten or message
 
     def _is_greeting(self, message: str) -> bool:
-        response = self.client.models.generate_content(
+        response = generate_with_retry(
+            self.client,
             model=self.model,
             contents=message,
             config={
@@ -306,7 +316,8 @@ Follow-up question: {message}"""
 
 Question: {question}"""
 
-        response = self.client.models.generate_content(
+        response = generate_with_retry(
+            self.client,
             model=self.model,
             contents=prompt,
             config={
@@ -323,7 +334,8 @@ Question: {question}"""
 
 Question: {question}"""
 
-        stream = self.client.models.generate_content_stream(
+        stream = generate_stream_with_retry(
+            self.client,
             model=self.model,
             contents=prompt,
             config={

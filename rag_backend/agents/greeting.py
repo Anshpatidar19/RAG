@@ -7,6 +7,8 @@ a real question in the first place.
 
 from google import genai
 
+from agents.retry_utils import generate_stream_with_retry, generate_with_retry
+
 SYSTEM_PROMPT = """You are a friendly assistant for a document Q&A system. \
 The user has sent a casual/conversational message (greeting, thanks, small talk, \
 a question about you/your capabilities) rather than a question about their documents.
@@ -22,7 +24,8 @@ class GreetingAgent:
         self.model = model
 
     def respond(self, message: str) -> str:
-        response = self.client.models.generate_content(
+        response = generate_with_retry(
+            self.client,
             model=self.model,
             contents=message,
             config={
@@ -34,7 +37,8 @@ class GreetingAgent:
         return response.text or ""
 
     def respond_stream(self, message: str):
-        stream = self.client.models.generate_content_stream(
+        stream = generate_stream_with_retry(
+            self.client,
             model=self.model,
             contents=message,
             config={

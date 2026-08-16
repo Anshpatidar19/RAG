@@ -105,7 +105,24 @@ a:focus-visible {
   padding: 4px 8px;
 }
 
+.conversation-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+
+.conversation-row.active {
+  background: var(--accent-dim);
+}
+
+.conversation-row.active .conversation-item {
+  color: var(--accent);
+}
+
 .conversation-item {
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: none;
@@ -125,9 +142,27 @@ a:focus-visible {
   color: var(--text);
 }
 
-.conversation-item.active {
-  background: var(--accent-dim);
-  color: var(--accent);
+.conversation-delete {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.conversation-row:hover .conversation-delete {
+  opacity: 1;
+}
+
+.conversation-delete:hover {
+  color: var(--error);
+  background: var(--surface-2);
 }
 
 .sidebar-kb {

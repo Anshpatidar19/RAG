@@ -6,6 +6,7 @@ import {
   listConversations,
   createConversation,
   getConversationMessages,
+  deleteConversation,
 } from "./api/client";
 import "./App.css";
 
@@ -94,6 +95,20 @@ export default function App() {
     loadConversation(id);
   }
 
+  async function handleDeleteChat(id) {
+    try {
+      await deleteConversation(id);
+    } catch {
+      // Even if the delete request fails, still remove it locally so the
+      // UI doesn't get stuck — worst case it reappears on next refresh.
+    }
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    if (id === activeId) {
+      setActiveId(null);
+      setActiveMessages([]);
+    }
+  }
+
   function handleNewMessage(turn) {
     setActiveMessages((prev) => [...prev, turn]);
   }
@@ -112,6 +127,7 @@ export default function App() {
         activeId={activeId}
         onNewChat={handleNewChat}
         onSelectChat={handleSelectChat}
+        onDeleteChat={handleDeleteChat}
         documents={documents}
         documentsError={documentsError}
         onDocsChanged={refreshDocuments}

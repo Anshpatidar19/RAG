@@ -4,10 +4,30 @@ against the vector index go through this class — nothing else in the
 codebase should import pinecone directly.
 """
 
+import time
+
 from pinecone import Pinecone
 
 from config import settings
 from core.models import Chunk, RetrievalResult
+
+
+def _with_retry(func, max_attempts: int = 3, base_delay: float = 0.5):
+    """
+    Short bounded retry for transient network issues talking to Pinecone
+    (e.g. a dropped connection mid-request) — not for genuine errors like
+    a bad index name or bad auth, which fail immediately and consistently
+    regardless of retrying, so retrying doesn't mask real problems.
+    """
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return func()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                time.sleep(base_delay * (2**attempt))
+    raise last_exc
 
 
 class VectorStoreRepository:
@@ -36,13 +56,15 @@ class VectorStoreRepository:
                     },
                 }
             )
-        self._index.upsert(vectors=records)
+        _with_retry(lambda: self._index.upsert(vectors=records))
 
     def query(self, query_vector: list[float], top_k: int) -> list[RetrievalResult]:
-        response = self._index.query(
-            vector=query_vector,
-            top_k=top_k,
-            include_metadata=True,
+        response = _with_retry(
+            lambda: self._index.query(
+                vector=query_vector,
+                top_k=top_k,
+                include_metadata=True,
+            )
         )
         results = []
         for match in response.matches:
@@ -65,8 +87,8 @@ class VectorStoreRepository:
 
     def delete_by_doc_id(self, doc_id: str) -> None:
         """Delete all chunks belonging to a document."""
-        self._index.delete(filter={"doc_id": {"$eq": doc_id}})
+        _with_retry(lambda: self._index.delete(filter={"doc_id": {"$eq": doc_id}}))
 
     def delete_all(self) -> None:
         """Wipe the entire index. Use with care."""
-        self._index.delete(delete_all=True)
+        _with_retry(lambda: self._index.delete(delete_all=True))
