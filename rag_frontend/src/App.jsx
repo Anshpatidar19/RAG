@@ -134,7 +134,7 @@ export default function App() {
       />
       <main className="main-column">
         <header className="main-header">
-          <span className="brand">▲ Universal RAG</span>
+          <span className="brand">▲ Agentic RAG</span>
         </header>
         <Chat
           conversationId={activeId}
