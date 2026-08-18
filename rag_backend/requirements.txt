@@ -31,6 +31,7 @@ mistralai==1.5.1
 # Web scraping (URL ingestion)
 requests==2.32.3
 beautifulsoup4==4.12.3
+playwright==1.49.1
 
 # Supabase (document metadata + chat history)
 supabase==2.10.0

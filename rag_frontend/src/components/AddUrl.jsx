@@ -11,11 +11,15 @@ export default function AddUrl({ onAdded }) {
     const trimmed = url.trim();
     if (!trimmed || status === "loading") return;
 
+    // Clear immediately, whether this succeeds or fails — leaving stale
+    // text in the box let a later paste silently concatenate onto it
+    // (e.g. "...wiki/Marvel" + "https://other-site.com/..." glued together
+    // with no separator), which is what caused malformed URLs before.
+    setUrl("");
     setStatus("loading");
     setErrorMessage("");
     try {
       const document = await ingestUrl(trimmed);
-      setUrl("");
       setStatus("idle");
       onAdded?.(document);
     } catch (err) {
