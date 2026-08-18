@@ -260,6 +260,8 @@ a:focus-visible {
   font-size: 12px;
   font-family: var(--font-mono);
   margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .upload-notice {
@@ -269,9 +271,26 @@ a:focus-visible {
   margin: 0;
 }
 
+.add-url-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
 .add-url-form {
   display: flex;
   gap: 6px;
+  min-width: 0;
+}
+
+.add-url-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .add-url-form input {
