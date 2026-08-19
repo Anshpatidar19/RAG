@@ -928,3 +928,246 @@ a:focus-visible {
 .speak-button.speaking {
   color: var(--accent);
 }
+
+/* ============================================================
+   EMAIL DRAFT / GMAIL COMPOSE PANEL
+   ============================================================ */
+
+.email-send-panel {
+  width: calc(100% - 48px);
+  max-width: 800px;
+  margin: 0 auto 16px;
+  padding: 16px 18px;
+
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+
+  box-sizing: border-box;
+}
+
+.email-send-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  margin-bottom: 14px;
+
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+
+  color: var(--accent);
+}
+
+.email-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ------------------------------------------------------------
+   To / Subject
+   ------------------------------------------------------------ */
+
+.email-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.email-preview-row label {
+  width: 65px;
+  flex-shrink: 0;
+
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.email-preview-row input {
+  flex: 1;
+  min-width: 0;
+
+  padding: 9px 11px;
+
+  background: var(--surface-2);
+  color: var(--text);
+
+  border: 1px solid var(--border);
+  border-radius: 6px;
+
+  font-family: var(--font-sans);
+  font-size: 13px;
+
+  box-sizing: border-box;
+}
+
+.email-preview-row input::placeholder {
+  color: var(--text-muted);
+}
+
+.email-preview-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
+.email-preview-row input[readonly] {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+/* ------------------------------------------------------------
+   Message
+   ------------------------------------------------------------ */
+
+.email-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 2px;
+}
+
+.email-preview-body label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.email-preview-body textarea {
+  width: 100%;
+  min-height: 170px;
+  max-height: 320px;
+
+  padding: 12px;
+
+  background: var(--surface-2);
+  color: var(--text);
+
+  border: 1px solid var(--border);
+  border-radius: 6px;
+
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.email-preview-body textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
+/* ------------------------------------------------------------
+   Buttons
+   ------------------------------------------------------------ */
+
+.email-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  margin-top: 14px;
+}
+
+.email-send-actions button {
+  padding: 9px 14px;
+
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+
+  background: var(--surface-2);
+  color: var(--text-secondary);
+
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+
+  cursor: pointer;
+
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    opacity 0.15s;
+}
+
+/* Open in Gmail */
+
+.email-send-actions button:first-child {
+  background: var(--accent);
+  color: #0f1115;
+  border-color: var(--accent);
+}
+
+.email-send-actions button:first-child:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+/* Cancel */
+
+.email-send-actions button:last-child {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.email-send-actions button:last-child:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.email-send-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------
+   Status
+   ------------------------------------------------------------ */
+
+.email-send-status {
+  margin: 10px 0 0;
+
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------
+   Responsive
+   ------------------------------------------------------------ */
+
+@media (max-width: 700px) {
+  .email-send-panel {
+    width: calc(100% - 24px);
+    margin-bottom: 12px;
+    padding: 14px;
+  }
+
+  .email-preview-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .email-preview-row label {
+    width: auto;
+  }
+
+  .email-send-actions {
+    flex-wrap: wrap;
+  }
+
+  .email-send-actions button {
+    flex: 1;
+    min-width: 130px;
+  }
+}
