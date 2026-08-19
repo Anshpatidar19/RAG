@@ -100,7 +100,7 @@ Possible intents:
   format, or compose an email or professional message.
 
 - QUESTION — a real question that requires information retrieval,
-  document search, web research, calculation, analysis, or another
+  document search, web research, analysis, or another
   knowledge-based task.
 
 Respond with exactly one word:

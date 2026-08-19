@@ -21,11 +21,15 @@ This keeps compatibility with the existing ingestion pipeline.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger("web_scrape")
+logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
 
 class WebFetchError(Exception):
@@ -392,6 +396,27 @@ def _fetch_with_playwright(url: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Debug logging — full preview of what will be handed to chunking/embedding
+# ---------------------------------------------------------------------------
+
+def _log_preview(url: str, method: str, title: str, text: str, preview_chars: int = 1000) -> None:
+    preview = text[:preview_chars]
+    truncated = "... [truncated]" if len(text) > preview_chars else ""
+    logger.info(
+        "\n"
+        "===== SCRAPE RESULT (before chunking/embedding) =====\n"
+        "URL:      %s\n"
+        "Method:   %s\n"
+        "Title:    %s\n"
+        "Length:   %d characters\n"
+        "--- preview ---\n"
+        "%s%s\n"
+        "=======================================================",
+        url, method, title, len(text), preview, truncated,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public function
 # ---------------------------------------------------------------------------
 
@@ -427,11 +452,17 @@ def fetch_page(url: str) -> tuple[str, str]:
 
     try:
         title, text = _fetch_static(url)
+        logger.info(
+            "static fetch: %s | title=%r | %d chars extracted",
+            url, title, len(text.strip()),
+        )
 
         if len(text.strip()) >= MIN_USEFUL_TEXT_LENGTH:
+            _log_preview(url, "static", title, text)
             return title, text
 
-    except WebFetchError:
+    except WebFetchError as exc:
+        logger.info("static fetch failed for %s: %s", url, exc)
         # Static fetching failed.
         # Playwright will be attempted below.
         pass
@@ -441,10 +472,15 @@ def fetch_page(url: str) -> tuple[str, str]:
     # ---------------------------------------------------------------
 
     title, text = _fetch_with_playwright(url)
+    logger.info(
+        "playwright fetch: %s | title=%r | %d chars extracted",
+        url, title, len(text.strip()),
+    )
 
     if not text.strip():
         raise WebFetchError(
             f"No readable text content found at {url}"
         )
 
+    _log_preview(url, "playwright", title, text)
     return title, text

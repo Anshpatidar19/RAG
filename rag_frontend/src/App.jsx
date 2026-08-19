@@ -4,11 +4,12 @@ import Chat from "./components/Chat";
 import {
   listDocuments,
   listConversations,
-  createConversation,
   getConversationMessages,
   deleteConversation,
 } from "./api/client";
 import "./App.css";
+
+const PLACEHOLDER_PREFIX = "local-";
 
 function sourcesFromServer(sources) {
   return (sources || []).map((s) => ({
@@ -19,6 +20,10 @@ function sourcesFromServer(sources) {
     score: s.score,
     text_snippet: s.text_snippet,
   }));
+}
+
+function stripPlaceholders(list) {
+  return list.filter((c) => !c.id.startsWith(PLACEHOLDER_PREFIX));
 }
 
 export default function App() {
@@ -42,7 +47,12 @@ export default function App() {
   const refreshConversations = useCallback(async () => {
     try {
       const convos = await listConversations();
-      setConversations(convos);
+      setConversations((prev) => {
+        // Keep any pending placeholder (it doesn't exist on the backend
+        // yet, so a plain refresh would otherwise wipe it out).
+        const placeholder = prev.find((c) => c.id.startsWith(PLACEHOLDER_PREFIX));
+        return placeholder ? [placeholder, ...convos] : convos;
+      });
       return convos;
     } catch {
       return [];
@@ -77,25 +87,37 @@ export default function App() {
     }
   }
 
-  async function handleNewChat() {
-    try {
-      const convo = await createConversation("New chat");
-      setConversations((prev) => [{ id: convo.id, title: convo.title }, ...prev]);
-      setActiveId(convo.id);
-      setActiveMessages([]);
-    } catch {
-      // If conversation creation fails, the first /ask call will create
-      // one server-side anyway (conversation_id starts null).
-      setActiveId(null);
-      setActiveMessages([]);
-    }
+  function handleNewChat() {
+    // Show an instant local placeholder so the sidebar doesn't look
+    // empty/broken — it isn't saved to the backend yet. The moment the
+    // first message actually creates a real conversation server-side,
+    // handleConversationCreated swaps this placeholder out for the real,
+    // properly-titled one.
+    const placeholderId = `${PLACEHOLDER_PREFIX}${Date.now()}`;
+    setConversations((prev) => [
+      { id: placeholderId, title: "New chat" },
+      ...stripPlaceholders(prev),
+    ]);
+    setActiveId(placeholderId);
+    setActiveMessages([]);
   }
 
   function handleSelectChat(id) {
+    // Switching to a different real chat abandons any unsent placeholder.
+    setConversations((prev) => stripPlaceholders(prev));
     loadConversation(id);
   }
 
   async function handleDeleteChat(id) {
+    if (id.startsWith(PLACEHOLDER_PREFIX)) {
+      // Never sent a message in it — nothing exists on the backend to delete.
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (id === activeId) {
+        setActiveId(null);
+        setActiveMessages([]);
+      }
+      return;
+    }
     try {
       await deleteConversation(id);
     } catch {
@@ -114,10 +136,17 @@ export default function App() {
   }
 
   function handleConversationCreated(id) {
-    if (!activeId) {
-      setActiveId(id);
-      refreshConversations();
-    }
+    setActiveId((currentActiveId) => {
+      const wasPlaceholder =
+        typeof currentActiveId === "string" &&
+        currentActiveId.startsWith(PLACEHOLDER_PREFIX);
+      if (wasPlaceholder || !currentActiveId) {
+        setConversations((prev) => stripPlaceholders(prev));
+        refreshConversations();
+        return id;
+      }
+      return currentActiveId;
+    });
   }
 
   return (
@@ -137,7 +166,7 @@ export default function App() {
           <span className="brand">▲ Agentic RAG</span>
         </header>
         <Chat
-          conversationId={activeId}
+          conversationId={activeId?.startsWith(PLACEHOLDER_PREFIX) ? null : activeId}
           messages={activeMessages}
           onNewMessage={handleNewMessage}
           onConversationCreated={handleConversationCreated}
