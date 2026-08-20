@@ -1,24 +1,37 @@
 """
-Parses image files into text for the ingestion pipeline. Two distinct
-capabilities are combined here:
+Document extraction using Gemini.
 
-1. OCR (Mistral) — extracts text that's actually WRITTEN in the image
-   (scanned documents, screenshots, signs, marksheets). This is the
-   primary path.
-2. Vision captioning (Gemini) — used only as a fallback when OCR finds
-   no readable text at all, e.g. an ordinary photo (a person standing
-   in front of a landmark). OCR can't identify scenery, objects, or
-   locations — that needs an actual vision model to describe what's
-   IN the photo, not what's written on it.
+PDF:
+    Used as the OCR fallback for scanned PDFs.
+    The PDF is sent directly to Gemini as bytes.
+
+Images:
+    A single Gemini vision call handles both:
+    1. Text/document transcription
+    2. Ordinary image/scene description
+
+Returns:
+    list[tuple[str, int | None]]
+
+For PDFs:
+    (text, page_number)
+
+For images:
+    (text, None)
 """
 
-import base64
 from pathlib import Path
+import re
 
 from google import genai
-from mistralai import Mistral
+from google.genai import types
 
 from config import settings
+
+
+# ---------------------------------------------------------------------------
+# Supported image MIME types
+# ---------------------------------------------------------------------------
 
 _MIME_TYPES = {
     ".png": "image/png",
@@ -27,96 +40,569 @@ _MIME_TYPES = {
     ".webp": "image/webp",
 }
 
-_CAPTION_PROMPT = (
-    "Describe this image factually and specifically. Include any people, "
-    "objects, setting, and — importantly — any recognizable landmarks, "
-    "buildings, or locations visible in the photo. If you recognize the "
-    "location (e.g. a famous monument), name it explicitly."
-)
 
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
 
 class OCRNotConfiguredError(Exception):
     pass
 
 
-def _caption_with_vision(filepath: str) -> str:
-    """Fallback for photos with no readable text — describes what's IN the image."""
-    path = Path(filepath)
-    mime_type = _MIME_TYPES.get(path.suffix.lower(), "image/png")
-    client = genai.Client(api_key=settings.gemini_api_key)
+# ---------------------------------------------------------------------------
+# PDF extraction prompt
+# ---------------------------------------------------------------------------
 
-    response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
-        contents=[
-            {"inline_data": {"mime_type": mime_type, "data": path.read_bytes()}},
-            _CAPTION_PROMPT,
-        ],
-        config={"max_output_tokens": 400, "thinking_config": {"thinking_budget": 0}},
+PDF_EXTRACTION_PROMPT = """
+You are a high-accuracy document transcription engine.
+
+Extract the complete readable content from this PDF.
+
+This is DOCUMENT EXTRACTION, not question answering.
+
+Do NOT summarize.
+Do NOT explain.
+Do NOT answer questions.
+Do NOT invent information.
+
+============================================================
+PAGE MARKERS
+============================================================
+
+Start every page with exactly:
+
+=== PAGE 1 ===
+=== PAGE 2 ===
+=== PAGE 3 ===
+
+and so on.
+
+The page number must correspond to the original PDF page.
+
+============================================================
+TEXT
+============================================================
+
+Transcribe all readable text.
+
+Preserve exactly:
+
+- names
+- dates
+- roll numbers
+- enrollment numbers
+- registration numbers
+- addresses
+- headings
+- labels
+- subject names
+- marks
+- totals
+- grades
+- percentages
+- other important numbers
+
+Do not silently omit information.
+
+============================================================
+TABLES
+============================================================
+
+Tables are extremely important.
+
+Convert every table into clean HTML.
+
+Example:
+
+<table>
+<thead>
+<tr>
+<th>Subject</th>
+<th>Maximum Marks</th>
+<th>Marks Obtained</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>English</td>
+<td>100</td>
+<td>78</td>
+</tr>
+</tbody>
+</table>
+
+Preserve:
+
+- all headers
+- all rows
+- all values
+- column relationships
+- row relationships
+
+Do NOT flatten a table into random text.
+
+This is especially important for:
+
+- marksheets
+- transcripts
+- invoices
+- financial statements
+- result sheets
+- tables containing numbers
+
+============================================================
+SCANNED PAGES
+============================================================
+
+If the PDF page is an image/scanned document, visually read it
+and transcribe the readable content.
+
+Do not say that the page cannot be processed simply because it
+is scanned.
+
+============================================================
+UNREADABLE VALUES
+============================================================
+
+If a value genuinely cannot be read, use:
+
+[UNREADABLE]
+
+Never guess.
+
+============================================================
+OUTPUT
+============================================================
+
+Return ONLY the extracted document content.
+
+Do not add:
+
+- summaries
+- explanations
+- conclusions
+- commentary
+- "Here is the transcription"
+
+Start directly with:
+
+=== PAGE 1 ===
+"""
+
+
+# ---------------------------------------------------------------------------
+# Image extraction prompt
+# ---------------------------------------------------------------------------
+
+IMAGE_EXTRACTION_PROMPT = """
+Analyze this image for a searchable RAG knowledge base.
+
+There are two cases.
+
+============================================================
+CASE 1 — TEXT / DOCUMENT IMAGE
+============================================================
+
+If the image contains meaningful readable text:
+
+Transcribe ALL readable text.
+
+Preserve:
+
+- names
+- dates
+- numbers
+- headings
+- labels
+- addresses
+- signs
+- document text
+- subject names
+- marks
+- grades
+
+If a table is visible, convert it to clean HTML.
+
+Do not summarize the text.
+
+============================================================
+CASE 2 — ORDINARY PHOTOGRAPH
+============================================================
+
+If there is no meaningful document/text content, describe what
+is visibly present.
+
+Include:
+
+- people
+- objects
+- buildings
+- landmarks
+- vehicles
+- setting
+- visible location clues
+
+If a recognizable landmark or location is visible, identify it
+when the visual evidence supports the identification.
+
+Do not invent information.
+
+============================================================
+OUTPUT
+============================================================
+
+If text is present:
+    return the transcription.
+
+If it is an ordinary photograph:
+    return a factual visual description.
+
+Do not add unnecessary commentary.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Page marker parser
+# ---------------------------------------------------------------------------
+
+_PAGE_MARKER_RE = re.compile(
+    r"(?im)^\s*===\s*PAGE\s+(\d+)\s*===\s*$"
+)
+
+
+def _split_pdf_pages(
+    text: str,
+) -> list[tuple[str, int]]:
+    """
+    Split Gemini's page-marked response into:
+
+        [(page_text, page_number), ...]
+
+    If Gemini does not return page markers, the entire response
+    is safely treated as page 1.
+    """
+
+    if not text or not text.strip():
+        return []
+
+    matches = list(
+        _PAGE_MARKER_RE.finditer(text)
     )
-    return response.text or ""
 
+    if not matches:
+        return [
+            (
+                text.strip(),
+                1,
+            )
+        ]
 
-def parse_image(filepath: str) -> list[tuple[str, int | None]]:
-    if not settings.mistral_api_key:
-        raise OCRNotConfiguredError(
-            "MISTRAL_API_KEY is not set in .env — image OCR is unavailable."
+    pages: list[tuple[str, int]] = []
+
+    for index, match in enumerate(matches):
+
+        page_number = int(
+            match.group(1)
         )
 
-    path = Path(filepath)
-    mime_type = _MIME_TYPES.get(path.suffix.lower(), "image/png")
-    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+        start = match.end()
 
-    client = Mistral(api_key=settings.mistral_api_key)
-    response = client.ocr.process(
-        model="mistral-ocr-latest",
-        document={
-            "type": "image_url",
-            "image_url": f"data:{mime_type};base64,{encoded}",
-        },
-    )
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        else:
+            end = len(text)
 
-    pages: list[tuple[str, int | None]] = []
-    for page in response.pages:
-        if page.markdown and page.markdown.strip():
-            pages.append((page.markdown, None))
+        page_text = text[start:end].strip()
 
-    if not pages:
-        # No text found at all — likely an ordinary photo, not a document.
-        # Fall back to vision captioning so it's still searchable
-        # (e.g. "a person in front of the Taj Mahal" becomes findable text).
-        caption = _caption_with_vision(filepath)
-        if caption.strip():
-            pages.append((caption, None))
+        if page_text:
+            pages.append(
+                (
+                    page_text,
+                    page_number,
+                )
+            )
 
     return pages
 
 
-def parse_pdf_via_ocr(filepath: str) -> list[tuple[str, int | None]]:
+# ---------------------------------------------------------------------------
+# PDF OCR using Gemini
+# ---------------------------------------------------------------------------
+
+def parse_pdf_via_ocr(
+    filepath: str,
+) -> list[tuple[str, int | None]]:
     """
-    Used as a fallback when a PDF has little or no extractable text —
-    typically a scanned document (photographed or scanned pages saved
-    as a PDF with no underlying text layer). Preserves page numbers,
-    unlike the image OCR path, since Mistral returns per-page results.
+    Extract a scanned PDF using Gemini.
+
+    IMPORTANT:
+    PyMuPDF remains responsible for native PDF extraction.
+
+    This function is only called when the native PDF extraction
+    determines that the PDF contains little/no usable text.
+
+    The PDF is sent directly to Gemini as raw bytes.
     """
-    if not settings.mistral_api_key:
-        raise OCRNotConfiguredError(
-            "MISTRAL_API_KEY is not set in .env — scanned PDF OCR is unavailable."
-        )
 
     path = Path(filepath)
-    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
 
-    client = Mistral(api_key=settings.mistral_api_key)
-    response = client.ocr.process(
-        model="mistral-ocr-latest",
-        document={
-            "type": "document_url",
-            "document_url": f"data:application/pdf;base64,{encoded}",
-        },
+    if not path.exists():
+        raise FileNotFoundError(
+            f"PDF file not found: {filepath}"
+        )
+
+    if path.suffix.lower() != ".pdf":
+        raise ValueError(
+            f"Expected PDF file, got: {path.suffix}"
+        )
+
+    if not settings.gemini_api_key:
+        raise OCRNotConfiguredError(
+            "GEMINI_API_KEY is not set in .env — "
+            "scanned PDF OCR is unavailable."
+        )
+
+    print("\n" + "=" * 80)
+    print("[OCR] Calling Gemini OCR for PDF")
+    print(
+        f"[OCR] File: {path}"
+    )
+    print(
+        f"[OCR] Size: {path.stat().st_size} bytes"
+    )
+    print("=" * 80)
+
+    try:
+
+        # ---------------------------------------------------------------
+        # Gemini client
+        # ---------------------------------------------------------------
+
+        client = genai.Client(
+            api_key=settings.gemini_api_key
+        )
+
+        # ---------------------------------------------------------------
+        # Read PDF as raw bytes
+        #
+        # No manual base64 encoding.
+        # ---------------------------------------------------------------
+
+        pdf_bytes = path.read_bytes()
+
+        pdf_part = types.Part.from_bytes(
+            data=pdf_bytes,
+            mime_type="application/pdf",
+        )
+
+        # ---------------------------------------------------------------
+        # Gemini document understanding
+        # ---------------------------------------------------------------
+
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=[
+                pdf_part,
+                PDF_EXTRACTION_PROMPT,
+            ],
+            config={
+                "temperature": 0,
+                "max_output_tokens": 12000,
+            },
+        )
+
+        raw_text = (
+            response.text or ""
+        ).strip()
+
+        if not raw_text:
+            raise OCRNotConfiguredError(
+                "Gemini returned an empty OCR response."
+            )
+
+        # ---------------------------------------------------------------
+        # Split into pages
+        # ---------------------------------------------------------------
+
+        pages = _split_pdf_pages(
+            raw_text
+        )
+
+        print(
+            f"[ocr] Gemini OCR returned "
+            f"{len(pages)} page(s) for {path}"
+        )
+
+        total_chars = 0
+
+        for page_text, page_number in pages:
+
+            total_chars += len(
+                page_text
+            )
+
+            print(
+                f"[ocr]   page {page_number}: "
+                f"{len(page_text)} chars"
+            )
+
+            print(
+                "  ----- Gemini OCR content preview -----"
+            )
+
+            preview = page_text[:1200]
+
+            print(preview)
+
+            if len(page_text) > 1200:
+                print(
+                    "  ... [truncated]"
+                )
+
+            print(
+                "  --------------------------------"
+            )
+
+        print(
+            f"[ocr] Gemini OCR succeeded for "
+            f"{path}: {len(pages)} pages, "
+            f"{total_chars} total chars"
+        )
+
+        return pages
+
+    except Exception as exc:
+
+        print(
+            f"[ocr] Gemini OCR failed for {path}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Image processing using Gemini
+# ---------------------------------------------------------------------------
+
+def parse_image(
+    filepath: str,
+) -> list[tuple[str, int | None]]:
+    """
+    Process an image with Gemini.
+
+    One Gemini call handles both:
+
+    - OCR/transcription of text
+    - description of ordinary photographs
+    """
+
+    path = Path(filepath)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Image file not found: {filepath}"
+        )
+
+    mime_type = _MIME_TYPES.get(
+        path.suffix.lower()
     )
 
-    pages: list[tuple[str, int | None]] = []
-    for i, page in enumerate(response.pages, start=1):
-        if page.markdown and page.markdown.strip():
-            pages.append((page.markdown, i))
-    return pages
+    if mime_type is None:
+        raise ValueError(
+            f"Unsupported image type: {path.suffix}"
+        )
+
+    if not settings.gemini_api_key:
+        raise OCRNotConfiguredError(
+            "GEMINI_API_KEY is not set in .env — "
+            "image processing is unavailable."
+        )
+
+    print("\n" + "=" * 80)
+    print("[VISION] Calling Gemini for image")
+    print(
+        f"[VISION] File: {path}"
+    )
+    print("=" * 80)
+
+    try:
+
+        client = genai.Client(
+            api_key=settings.gemini_api_key
+        )
+
+        # ---------------------------------------------------------------
+        # Raw image bytes
+        # ---------------------------------------------------------------
+
+        image_bytes = path.read_bytes()
+
+        image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type=mime_type,
+        )
+
+        # ---------------------------------------------------------------
+        # One Gemini call
+        # ---------------------------------------------------------------
+
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=[
+                image_part,
+                IMAGE_EXTRACTION_PROMPT,
+            ],
+            config={
+                "temperature": 0,
+                "max_output_tokens": 4000,
+            },
+        )
+
+        text = (
+            response.text or ""
+        ).strip()
+
+        if not text:
+            print(
+                "[VISION] Gemini returned no content."
+            )
+            return []
+
+        print(
+            f"[VISION] Gemini returned "
+            f"{len(text)} characters"
+        )
+
+        print(
+            "----- Gemini image result -----"
+        )
+
+        print(
+            text[:2000]
+        )
+
+        if len(text) > 2000:
+            print(
+                "... [truncated]"
+            )
+
+        print(
+            "--------------------------------"
+        )
+
+        return [
+            (
+                text,
+                None,
+            )
+        ]
+
+    except Exception as exc:
+
+        print(
+            f"[VISION] Gemini image processing failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        raise

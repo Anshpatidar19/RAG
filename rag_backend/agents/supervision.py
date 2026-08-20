@@ -3,49 +3,49 @@ The Supervisor Agent.
 
 Routing flow:
 
-                         USER MESSAGE
+                          USER MESSAGE
                               │
                               ▼
-                       Intent Classification
+                        Intent Classification
                               │
-              ┌───────────────┼────────────────┐
-              │               │                │
-              ▼               ▼                ▼
-          GREETING          EMAIL           QUESTION
-              │               │                │
-              ▼               ▼                ▼
-       GreetingAgent    EmailWriterAgent   Document Search
+               ┌───────────────┼────────────────┐
+               │               │                │
+               ▼               ▼                ▼
+           GREETING          EMAIL           QUESTION
+               │               │                │
+               ▼               ▼                ▼
+        GreetingAgent    EmailWriterAgent   Document Search
                                                │
                                                ▼
-                                      Retrieval Threshold
+                                       Retrieval Threshold
                                                │
-                                  ┌────────────┴────────────┐
-                                  │                         │
-                              Sufficient               Insufficient
-                                  │                         │
-                                  ▼                         │
-                           Reflection Agent                │
-                                  │                         │
-                         ┌────────┴────────┐                │
-                         │                 │                │
-                     Sufficient        Insufficient         │
-                         │                 │                │
-                         ▼                 └────────┬───────┘
-                    Document RAG                    │
+                                   ┌────────────┴────────────┐
+                                   │                         │
+                               Sufficient               Insufficient
+                                   │                         │
+                                   ▼                         │
+                            Reflection Agent                │
+                                   │                         │
+                          ┌────────┴────────┐                │
+                          │                 │                │
+                      Sufficient        Insufficient         │
+                          │                 │                │
+                          ▼                 └────────┬───────┘
+                     Document RAG                    │
                                                     ▼
-                                          WebResearchAgent
+                                           WebResearchAgent
                                                     │
-                                      ┌─────────────┴─────────────┐
-                                      │                           │
-                                Web Search                  Playwright
-                                      │                           │
-                                      └─────────────┬─────────────┘
-                                                    ▼
-                                              Web Evidence
-                                                    │
-                                                    ▼
-                                           Reflection Agent
-                                                    │
+                                       ┌─────────────┴─────────────┐
+                                       │                           │
+                                 Web Search                  Playwright
+                                       │                           │
+                                       └─────────────┬─────────────┘
+                                                     ▼
+                                                Web Evidence
+                                                     │
+                                                     ▼
+                                              Reflection Agent
+                                                     │
                                            ┌────────┴────────┐
                                            │                 │
                                        Sufficient       Insufficient
@@ -293,6 +293,20 @@ class Supervisor:
                 doc_results
             )
 
+            # ===========================================================
+            # REFLECTION DEBUG
+            # ===========================================================
+
+            self._debug_reflection_context(
+                search_query,
+                doc_results,
+                doc_evidence,
+            )
+
+            # ===========================================================
+            # END REFLECTION DEBUG
+            # ===========================================================
+
             doc_verdict = self.reflection_agent.validate(
                 search_query,
                 doc_evidence,
@@ -505,6 +519,23 @@ class Supervisor:
                 doc_results
             )
 
+            # ===========================================================
+            # REFLECTION DEBUG
+            #
+            # This is the important part for your current problem.
+            # It prints exactly what is sent to ReflectionAgent.
+            # ===========================================================
+
+            self._debug_reflection_context(
+                search_query,
+                doc_results,
+                doc_evidence,
+            )
+
+            # ===========================================================
+            # END REFLECTION DEBUG
+            # ===========================================================
+
             doc_verdict = self.reflection_agent.validate(
                 search_query,
                 doc_evidence,
@@ -646,6 +677,107 @@ class Supervisor:
         }
 
     # -----------------------------------------------------------------------
+    # Reflection debugging
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _debug_reflection_context(
+        query: str,
+        results: list[RetrievalResult],
+        evidence: str,
+    ) -> None:
+        """
+        Print exactly what is being passed from retrieval to
+        ReflectionAgent.
+
+        This is temporary diagnostic logging.
+
+        It helps determine whether:
+            Retrieval → Reflection
+        is working correctly.
+        """
+
+        print("\n" + "=" * 100)
+
+        print(
+            "[REFLECTION DEBUG] QUERY"
+        )
+
+        print(
+            query
+        )
+
+        print(
+            "\n[REFLECTION DEBUG] "
+            "RETRIEVED DOCUMENT RESULTS"
+        )
+
+        print(
+            f"Results passed to ReflectionAgent: "
+            f"{len(results)}"
+        )
+
+        for i, result in enumerate(
+            results,
+            start=1,
+        ):
+
+            print(
+                "\n" + "-" * 80
+            )
+
+            print(
+                f"RESULT #{i}"
+            )
+
+            print(
+                f"Score: {result.score}"
+            )
+
+            print(
+                f"Source: {result.source_filename}"
+            )
+
+            print(
+                f"Page: "
+                f"{getattr(result.chunk, 'page_number', None)}"
+            )
+
+            print(
+                "\nTEXT:"
+            )
+
+            print(
+                result.chunk.text
+            )
+
+        print(
+            "\n" + "-" * 80
+        )
+
+        print(
+            "[REFLECTION DEBUG] "
+            "FORMATTED EVIDENCE LENGTH:"
+        )
+
+        print(
+            len(evidence)
+        )
+
+        print(
+            "\n[REFLECTION DEBUG] "
+            "FORMATTED EVIDENCE:"
+        )
+
+        print(
+            evidence
+        )
+
+        print(
+            "\n" + "=" * 100
+        )
+
+    # -----------------------------------------------------------------------
     # Intent classification
     # -----------------------------------------------------------------------
 
@@ -688,7 +820,6 @@ class Supervisor:
         message: str,
         history: list[dict] | None,
     ) -> str:
-
         """
         Rewrites a follow-up question into a standalone question.
 
@@ -829,7 +960,9 @@ Question:
                 f"{result.chunk.text}"
             )
 
-        return "\n\n".join(blocks)
+        return "\n\n".join(
+            blocks
+        )
 
     # -----------------------------------------------------------------------
     # Legacy web evidence formatter
@@ -857,4 +990,6 @@ Question:
                 f"{result.snippet}"
             )
 
-        return "\n\n".join(blocks)
+        return "\n\n".join(
+            blocks
+        )
